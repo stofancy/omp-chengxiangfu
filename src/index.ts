@@ -1,9 +1,9 @@
-// 丞相府：装上插件，每个 omp 主会话就是一个朝廷（调度器）。不想用就卸载插件。
+// omp-chengxiangfu：装上插件，每个 omp 主会话就是一个调度器。不想用就卸载插件。
 //
-// - 每个会话默认开一个新朝廷，军簿是空的；/bind 选一个已有朝廷，接上它的军簿。
-// - 每次请求末尾附调度规则、军令和军簿摘要（不写进会话历史，压缩丢不掉）；子代理只附军令。
-// - 远端写入、军报自动记账。不拦截任何操作：约束靠军令。
-// - 军报由会话外的程序写进 inbox/new；每 5 秒按线路由认领一次，合成一条消息叫醒朝廷。
+// - 每个会话默认用一个新账本；/bind 改用一个已有的账本。
+// - 每次请求末尾附调度规则、常设约束和账本摘要（不写进会话历史，压缩丢不掉）；子代理只附常设约束。
+// - 远端写入、外部消息自动记账。不拦截任何操作：约束靠常设约束。
+// - 外部消息由会话外的程序写进 inbox/new；每 5 秒按线路由认领一次，合成一条消息叫醒调度器。
 import { mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -69,7 +69,14 @@ export default function (pi: ExtensionAPI): void {
 	let ui: Ctx | undefined;
 	let inboxSinceInput = 0;
 	let urgentSinceInput = 0;
-	let named = ""; // 上次写进朝廷的会话名
+	let named = ""; // 上次写进账本名的会话标题
+	// 接上别的账本的会话，标题用那个账本的名字（omp 会按第一句话自动起标题，跟账本对不上）
+	const syncTitle = async () => {
+		const c = court();
+		if (!c || c === session) return;
+		const name = courts().find(x => x.id === c)?.name;
+		if (name && pi.getSessionName() !== name) await pi.setSessionName(name);
+	};
 	const pending = new Map<string, string>(); // toolCallId → 远端写入摘要
 	let replyNote: string | undefined; // 上一次回复的检查结果，下一次请求提醒模型
 	let awayNote: string | undefined; // 用户离开一段时间后回来：这期间的变化
@@ -87,11 +94,12 @@ export default function (pi: ExtensionAPI): void {
 		const c = court();
 		if (!c) return undefined;
 		const l = readLedger(c);
-		const parts = ["🪭 丞相府", `${openLines(l).size} 路`, `待主公定夺 ${l.asks.size}`, `在外将士 ${running(ctx).length}`, `军报 ${inboxSinceInput}`];
-		return (urgentSinceInput ? `⚡八百里加急 ${urgentSinceInput} · ` : "") + parts.join(" · ");
+		const parts = ["📋 调度", `进行中的线 ${openLines(l).size}`, `待你决定 ${l.asks.size}`, `子代理在跑 ${running(ctx).length}`, `新消息 ${inboxSinceInput}`];
+		if (urgentSinceInput) parts.push(`其中私信/@你 ${urgentSinceInput}`); // 都是你上次发话以来到的，发话后清零
+		return parts.join(" · ");
 	};
 
-	// ---------- 军报：按线路由，本朝廷的才认领；一拍内的合成一条消息 ----------
+	// ---------- 外部消息：按线路由，归本账本的才认领；一拍内的合成一条消息 ----------
 
 	const claimInbox = (c: string) => {
 		const names = readdirSync(INBOX_NEW).filter((n: string) => n.endsWith(".json")).sort();
@@ -106,14 +114,14 @@ export default function (pi: ExtensionAPI): void {
 			} catch (err) {
 				logError(`inbox ${f}`, err);
 				try {
-					renameSync(join(INBOX_NEW, f), join(INBOX_CLAIMED, f)); // 坏文件挪走，不挡后面的军报
+					renameSync(join(INBOX_NEW, f), join(INBOX_CLAIMED, f)); // 坏文件挪走，不挡后面的消息
 				} catch {}
 				continue;
 			}
 			if (route(ev.line, all) !== c) continue;
 			const owner = all.find(x => x.id === c)?.ledger.lastInputSid;
 			const ownerHere = owner && courtOf(owner) === c ? owner : undefined; // 那个会话已经 /bind 走了，就不再等它
-			if (ownerHere && ownerHere !== session) continue; // 同一朝廷开着几个会话：只交给主公最近发话的那个
+			if (ownerHere && ownerHere !== session) continue; // 同一账本开着几个会话：只交给你最近发话的那个
 			try {
 				renameSync(join(INBOX_NEW, f), join(INBOX_CLAIMED, f)); // 认领：只有一个进程能改名成功
 			} catch {
@@ -145,7 +153,7 @@ export default function (pi: ExtensionAPI): void {
 	const tick = () => {
 		const c = court();
 		if (!c || !ui) return;
-		// 朝廷名跟着开府会话的名字走（omp 自动起标题有延迟，所以每拍看一次）；绑过来的会话不改别人的朝廷名
+		// 账本名跟着创建它的会话的标题走（omp 自动起标题有延迟，所以每拍看一次）；接上别人账本的会话不改别人的账本名
 		const name = pi.getSessionName() ?? "";
 		if (c === session && name && name !== named) {
 			setCourtName(c, name);
@@ -156,7 +164,7 @@ export default function (pi: ExtensionAPI): void {
 	};
 
 	// 每条线的负责人用 omp 的隔离（单独一份代码，在里面建分支、推送、开 PR）。
-	// 关掉「自动倒灌」：omp 默认把隔离副本里的改动（含已推送的提交）打回主公的工作目录，会混进别的线。
+	// 关掉「自动倒灌」：omp 默认把隔离副本里的改动（含已推送的提交）打回你的工作目录，会混进别的线。
 	// 用户自己配过的不动；只改本进程内存，不写配置文件。
 	// 动态导入：这个内部子路径不在 omp 的公开扩展接口里，换版本可能不存在；静态导入失败会让整个插件加载不了
 	const enableIsolation = async () => {
@@ -182,13 +190,14 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", async (_e: unknown, ctx: Ctx) => {
 		if (!isMain(ctx)) return;
 		attach(ctx);
+		await syncTitle().catch(err => logError("title", err));
 		mkdirSync(INBOX_NEW, { recursive: true });
 		mkdirSync(INBOX_CLAIMED, { recursive: true });
 		ctx.setInterval(tick, TICK_MS); // 会话结束时 omp 自动清掉
 		await enableIsolation().catch(err => logError("isolation", err));
 	});
 
-	// /resume、/new 在同一进程里换会话：换成新会话的朝廷
+	// /resume、/new 在同一进程里换会话：换成新会话的账本
 	pi.on("session_switch", async (_e: unknown, ctx: Ctx) => {
 		if (!isMain(ctx)) return;
 		inboxSinceInput = 0;
@@ -198,6 +207,7 @@ export default function (pi: ExtensionAPI): void {
 		awayNote = undefined;
 		awayDelivered = false;
 		attach(ctx);
+		await syncTitle().catch(err => logError("title", err));
 	});
 
 	pi.on("input", async (e: { text?: string }, ctx: Ctx) => {
@@ -296,7 +306,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("bind", {
-		description: "本会话接上一个已有朝廷的军簿（线、待定的事、已定的事）",
+		description: "本会话接上一个已有的账本（线、待定的事、已定的事）",
 		handler: async (_args: string, ctx: Ctx) => {
 			if (!isMain(ctx) || !session) return;
 			const current = court();
@@ -308,8 +318,8 @@ export default function (pi: ExtensionAPI): void {
 					const mark = c.id === current ? "（当前）" : c.id === session ? "（本会话自己的）" : "";
 					return { id: c.id, label: `${c.name}${mark} · ${lines} · 待定 ${c.ledger.asks.size}` };
 				});
-			if (!options.some(o => o.id === session)) options.push({ id: session, label: "本会话自己的朝廷（空）" });
-			const picked = await ctx.ui.select?.("接上哪个朝廷的军簿？", options.map(o => o.label));
+			if (!options.some(o => o.id === session)) options.push({ id: session, label: "本会话自己的账本（空）" });
+			const picked = await ctx.ui.select?.("接上哪个账本？", options.map(o => o.label));
 			const target = options.find(o => o.label === picked)?.id;
 			if (!target || target === current) return;
 			bind(session, target);
@@ -317,12 +327,14 @@ export default function (pi: ExtensionAPI): void {
 			awayNote = undefined;
 			awayDelivered = false;
 			const l = readLedger(target);
-			ctx.ui.notify(`已接上：${openLines(l).size} 路，待主公定夺 ${l.asks.size}`, "info");
+			await syncTitle();
+			const name = courts().find(c => c.id === target)?.name ?? target;
+			ctx.ui.notify(`已接上「${name}」：进行中的线 ${openLines(l).size}，待你决定 ${l.asks.size}`, "info");
 			ctx.ui.setStatus?.(STATUS_KEY, status(ctx));
 		},
 	});
 
-	// ---------- 军簿工具 ----------
+	// ---------- 账本工具 ----------
 
 	const lineOf = (line: string | undefined) => line?.trim() || GENERAL;
 	const courtFor = (ctx: Ctx) => {

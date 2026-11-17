@@ -1,4 +1,4 @@
-# 丞相府军报源：只读外部系统，只写数据目录里的 inbox/。把 <repo> 换成仓库路径；日志位置自定。
+# omp-chengxiangfu 的外部消息源：只读外部系统，只写数据目录里的 inbox/。把 <repo> 换成仓库路径；日志位置自定。
 */10 * * * * cd <repo>/sources && flock -n /tmp/cxf-slack.lock python3 slack_poll.py
 */5 * * * * cd <repo>/sources && flock -n /tmp/cxf-pr.lock python3 pr_poll.py
 */30 * * * * cd <repo>/sources && flock -n /tmp/cxf-reminders.lock python3 reminders_poll.py

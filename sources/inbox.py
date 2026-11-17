@@ -1,4 +1,4 @@
-"""军报源共用：数据目录、配置、写军报、读写游标。只写本机文件。和 config.ts 保持同一套文件名规则。"""
+"""外部消息源共用：数据目录、配置、写外部消息、读写游标。只写本机文件。和 config.ts 保持同一套文件名规则。"""
 import hashlib
 import json
 import os
@@ -25,7 +25,7 @@ def read_secret(spec):
 
 
 def write_event(source, who, where, link, *, line=None, note=None, urgent=False, key=None, order_ns=None):
-    """军报只放「谁、在哪、链接」，不放原文：原文是不可信内容，由丞相府按需只读核实。
+    """外部消息只放「谁、在哪、链接」，不放原文：原文是不可信内容，由调度会话按需只读核实。
 
     给了 key 时文件名由 key 决定：同一条消息（例如实时推送和轮询补读）只进一次，返回 False 表示已有。
     """
@@ -38,7 +38,7 @@ def write_event(source, who, where, link, *, line=None, note=None, urgent=False,
     INBOX_NEW.mkdir(parents=True, exist_ok=True)
     tmp = INBOX_NEW.parent / f".{name}.tmp"
     tmp.write_text(body)
-    os.replace(tmp, INBOX_NEW / name)  # 先写临时文件再改名，丞相府不会读到半个文件
+    os.replace(tmp, INBOX_NEW / name)  # 先写临时文件再改名，插件不会读到半个文件
     return True
 
 

@@ -1,4 +1,4 @@
-// 军报源共用：数据目录、配置、写军报。和 inbox.py 保持同一套文件名规则，两边写同一条消息只进一次。
+// 外部消息源共用：数据目录、配置、写外部消息。和 inbox.py 保持同一套文件名规则，两边写同一条消息只进一次。
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +29,6 @@ export function writeEvent(ev: InboxEvent, key: string, orderNs: bigint): boolea
 	mkdirSync(join(INBOX, "new"), { recursive: true });
 	const tmp = join(INBOX, `.${name}.tmp`);
 	writeFileSync(tmp, JSON.stringify(Object.fromEntries(Object.entries(ev).filter(([, v]) => v !== undefined && v !== ""))));
-	renameSync(tmp, join(INBOX, "new", name)); // 先写临时文件再改名，丞相府不会读到半个文件
+	renameSync(tmp, join(INBOX, "new", name)); // 先写临时文件再改名，插件不会读到半个文件
 	return true;
 }

@@ -1,4 +1,4 @@
-"""定时检查（建议每 30 分钟）：提醒文件里到期、未完成的条目，每天写一次紧急军报。
+"""定时检查（建议每 30 分钟）：提醒文件里到期、未完成的条目，每天写一次紧急的外部消息。
 
 提醒文件是 JSON 数组，每项 {"id", "text", "due": "YYYY-MM-DD", "done": bool, "until"?: ISO 时间}；
 路径和归属的线在 config.json 的 reminders.file / reminders.line。

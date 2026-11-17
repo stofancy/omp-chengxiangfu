@@ -1,5 +1,5 @@
 """定时补读（建议每 10 分钟）：给 slack_socket.ts 兜底，补读 config.json 里 slack.channels 的频道（顶层消息和 thread 回复），
-把推送断线期间漏掉的、别人发的新消息写成军报。只读 Slack。
+把推送断线期间漏掉的、别人发的新消息写成外部消息。只读 Slack。
 
 第一次运行只记下当前位置，不回放历史。私信和 @ 到你的消息标为紧急。同一条消息推送已经写过的不会重复。
 """
@@ -79,7 +79,7 @@ def main():
         where = meta["name"] + (" (thread reply)" if parent else "")
         written += write_event("slack", display_name(m.get("user", "?"), users), where, link, line=None if urgent else meta.get("line"), urgent=urgent,
                                key=f"{ch}-{m['ts']}", order_ns=int(float(m["ts"]) * 1e9))
-    # 游标在军报写完之后才保存：中途失败下次会重读，宁可重复不丢
+    # 游标在消息写完之后才保存：中途失败下次会重读，宁可重复不丢
     save_state("slack-users.json", users)
     save_state("slack-cursor.json", cursors)
     if written:

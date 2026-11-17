@@ -1,7 +1,7 @@
-// Slack 实时推送（Socket Mode）常驻进程：别人发来的相关消息写成军报。只读 Slack。
+// Slack 实时推送（Socket Mode）常驻进程：别人发来的相关消息写成外部消息文件。只读 Slack。
 //
 // 哪些消息算相关：config.json 里 slack.channels 列的频道；发给你的私信和群聊私信；任何频道里 @ 到你的消息。
-// 私信和 @ 标为紧急（立即叫醒丞相府）。军报只写「谁、在哪、链接」，不写原文。
+// 私信和 @ 标为紧急（状态栏单独计数）。外部消息只写「谁、在哪、链接」，不写原文。
 // 断线期间的事件 Slack 不会补发，由 slack_poll.py 定时补读关注的频道；两边写同一条消息只进一次。
 import { config, readSecret, writeEvent } from "./config";
 
@@ -44,7 +44,7 @@ async function handle(ev: SlackMessage): Promise<void> {
 	const reply = ev.thread_ts && ev.thread_ts !== ev.ts;
 	const place = watched?.name ?? (ev.channel_type === "im" ? `DM ${who}` : direct ? "group DM" : await lookup("conversations.info", "channel", ev.channel));
 	const link = `https://${slack.domain}.slack.com/archives/${ev.channel}/p${ev.ts.replace(".", "")}${reply ? `?thread_ts=${ev.thread_ts}` : ""}`;
-	// 私信和 @ 你的消息不归线：送到你最近发过话的朝廷
+	// 私信和 @ 你的消息不归线：送到你最近发过话的账本
 	const event = { source: "slack", who, where: place + (reply ? " (thread reply)" : ""), link, line: direct || mention ? undefined : watched?.line, urgent: direct || mention };
 	const [sec, frac = ""] = ev.ts.split(".");
 	if (writeEvent(event, `${ev.channel}-${ev.ts}`, BigInt(sec) * 1_000_000_000n + BigInt(frac.padEnd(9, "0").slice(0, 9)))) {

@@ -1,4 +1,4 @@
-// 给人看的 Markdown 视图（courts/<朝廷>/views/），以及每次请求注入的账本摘要。都由程序生成。
+// 给人看的 Markdown 视图（courts/<账本>/views/），以及每次请求注入的账本摘要。都由程序生成。
 import { join } from "node:path";
 import { type Ev, type Item, type Ledger, isDone, openItems, readLedger, today, writeAtomic } from "./ledger";
 import { COURTS } from "./paths";

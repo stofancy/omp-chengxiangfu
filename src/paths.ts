@@ -1,4 +1,4 @@
-// 数据目录：各朝廷的军簿、会话与朝廷的绑定、军报。和代码分开。
+// 数据目录：各账本、会话与账本的绑定、外部消息。和代码分开。
 // 默认 $XDG_DATA_HOME/chengxiangfu（通常是 ~/.local/share/chengxiangfu），可用 CHENGXIANGFU_HOME 覆盖。
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 export const HOME = process.env.CHENGXIANGFU_HOME ?? join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local/share"), "chengxiangfu");
 
-export const COURTS = join(HOME, "courts"); // courts/<朝廷>/events.jsonl、views/
-export const BINDINGS = join(HOME, "bindings"); // bindings/<会话> 的内容是它绑定的朝廷；没有文件就是自己开的朝廷
+export const COURTS = join(HOME, "courts"); // courts/<账本>/events.jsonl、views/
+export const BINDINGS = join(HOME, "bindings"); // bindings/<会话> 的内容是它接上的账本；没有文件就是会话自己的账本
 export const INBOX_NEW = join(HOME, "inbox/new");
 export const INBOX_CLAIMED = join(HOME, "inbox/claimed");
 export const ERRLOG = join(HOME, "logs/extension-errors.log");
@@ -15,5 +15,5 @@ export const USER_RULES = join(HOME, "rules.md"); // 用户自己的补充规则
 export const CONFIG = join(HOME, "config.json"); // 规则参数（rules 段）和外部事件源的配置
 
 const prompt = (name: string) => fileURLToPath(new URL(`../prompts/${name}`, import.meta.url));
-export const DISPATCH_RULES = prompt("丞相府.md");
-export const ORDERS = prompt("军令.md");
+export const DISPATCH_RULES = prompt("调度规则.md");
+export const ORDERS = prompt("常设约束.md");

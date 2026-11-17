@@ -1,7 +1,7 @@
-"""定时轮询（建议每 5 分钟）：你自己开着的 PR 有别人的新评论、review 或投票，就写成军报。只读。
+"""定时轮询（建议每 5 分钟）：你自己开着的 PR 有别人的新评论、review 或投票，就写成外部消息。只读。
 
 GitHub 走 gh CLI；Azure DevOps 走 az CLI，只有 config.json 里配了 ado.org 才查。
-第一次运行只记下当前位置。按 PR 标题开头的卡号归到一路（config.json 的 line_pattern）。
+第一次运行只记下当前位置。按 PR 标题开头的卡号归到一条线（config.json 的 line_pattern）。
 """
 import json
 import subprocess

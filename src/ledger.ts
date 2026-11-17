@@ -1,4 +1,4 @@
-// 账本：每个朝廷一份只追加的事件日志 courts/<朝廷>/events.jsonl。所有状态都从事件折叠出来。
+// 账本：每个账本一份只追加的事件日志 courts/<账本>/events.jsonl。所有状态都从事件折叠出来。
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COURTS, ERRLOG } from "./paths";
@@ -16,8 +16,8 @@ export interface Ledger {
 	lastCorrection: number;
 	decisions: Ev[];
 	actions: Ev[];
-	lastInput?: string; // 用户最近一次在这个朝廷发话的时间，决定无主外部事件送给谁
-	lastInputSid?: string; // 那次发话所在的会话：同一朝廷开着几个会话时，外部事件只交给它
+	lastInput?: string; // 用户最近一次在这个账本下发话的时间，决定不归线的外部消息送给谁
+	lastInputSid?: string; // 那次发话所在的会话：同一账本开着几个会话时，外部消息只交给它
 	lastReply?: string; // 最近一次给用户最终回复的时间：「离开多久」从发话和回复里较晚的那个算
 }
 
