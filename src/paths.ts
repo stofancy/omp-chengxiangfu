@@ -11,7 +11,8 @@ export const BINDINGS = join(HOME, "bindings"); // bindings/<会话> 的内容�
 export const INBOX_NEW = join(HOME, "inbox/new");
 export const INBOX_CLAIMED = join(HOME, "inbox/claimed");
 export const ERRLOG = join(HOME, "logs/extension-errors.log");
-export const USER_RULES = join(HOME, "rules.md"); // 主公自己的补充规则，接在插件规则后面
+export const USER_RULES = join(HOME, "rules.md"); // 用户自己的补充规则，接在插件规则后面
+export const CONFIG = join(HOME, "config.json"); // 规则参数（rules 段）和外部事件源的配置
 
 const prompt = (name: string) => fileURLToPath(new URL(`../prompts/${name}`, import.meta.url));
 export const DISPATCH_RULES = prompt("丞相府.md");

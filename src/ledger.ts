@@ -1,4 +1,4 @@
-// 军簿：每个朝廷一份只追加的事件日志 courts/<朝廷>/events.jsonl。所有状态都从事件折叠出来。
+// 账本：每个朝廷一份只追加的事件日志 courts/<朝廷>/events.jsonl。所有状态都从事件折叠出来。
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COURTS, ERRLOG } from "./paths";
@@ -10,12 +10,15 @@ export interface Item { line: string; id: string; title: string; status: string;
 export interface Ask { n: number; line: string; text: string; opened: string }
 export interface Ledger {
 	items: Map<string, Map<string, Item>>; // 线 → 任务号 → 任务
-	asks: Map<number, Ask>; // 待主公定夺
+	asks: Map<number, Ask>; // 待用户决定
 	lastAsk: number; // 编号只增不复用：迟到的「1 做」不会落到别的问题上
+	corrections: Map<number, Ask>; // 用户的纠正，还没决定要不要写成规则
+	lastCorrection: number;
 	decisions: Ev[];
 	actions: Ev[];
-	lastInput?: string; // 主公最近一次在这个朝廷发话的时间，决定无主军报送给谁
-	lastInputSid?: string; // 那次发话所在的会话：同一朝廷开着几个会话时，军报只交给它
+	lastInput?: string; // 用户最近一次在这个朝廷发话的时间，决定无主外部事件送给谁
+	lastInputSid?: string; // 那次发话所在的会话：同一朝廷开着几个会话时，外部事件只交给它
+	lastReply?: string; // 最近一次给用户最终回复的时间：「离开多久」从发话和回复里较晚的那个算
 }
 
 export const today = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD，本地时区
@@ -30,7 +33,7 @@ export function readLedger(court: string): Ledger {
 	const key = st ? `${st.mtimeMs}:${st.size}` : "none";
 	const hit = cache.get(court);
 	if (hit?.key === key) return hit.ledger;
-	const ledger: Ledger = { items: new Map(), asks: new Map(), lastAsk: 0, decisions: [], actions: [] };
+	const ledger: Ledger = { items: new Map(), asks: new Map(), lastAsk: 0, corrections: new Map(), lastCorrection: 0, decisions: [], actions: [] };
 	for (const raw of (st ? readFileSync(file, "utf8") : "").split("\n")) {
 		if (!raw.trim()) continue;
 		try {
@@ -71,6 +74,16 @@ function fold(l: Ledger, ev: Ev): void {
 		case "input":
 			l.lastInput = ev.ts;
 			l.lastInputSid = ev.sid;
+			break;
+		case "reply":
+			l.lastReply = ev.ts;
+			break;
+		case "correction":
+			l.corrections.set(Number(ev.n), { n: Number(ev.n), line, text: String(ev.text), opened: ev.ts });
+			l.lastCorrection = Math.max(l.lastCorrection, Number(ev.n));
+			break;
+		case "correction_close":
+			l.corrections.delete(Number(ev.n));
 			break;
 		case "action":
 		case "inbox":

@@ -11,7 +11,8 @@ import { bind, courtOf, courts, route, setCourtName } from "./court";
 import { type Ev, GENERAL, append, logError, openLines, readLedger, today } from "./ledger";
 import { DISPATCH_RULES, HOME, INBOX_CLAIMED, INBOX_NEW, ORDERS, USER_RULES } from "./paths";
 import { remoteWrite } from "./remote";
-import { renderViews, snapshot } from "./views";
+import { checkReply, feedback, renderRules, settings } from "./rules";
+import { renderViews, since, snapshot } from "./views";
 
 const TICK_MS = 5_000;
 const STATUS_KEY = "chengxiangfu";
@@ -70,6 +71,10 @@ export default function (pi: ExtensionAPI): void {
 	let urgentSinceInput = 0;
 	let named = ""; // 上次写进朝廷的会话名
 	const pending = new Map<string, string>(); // toolCallId → 远端写入摘要
+	let replyNote: string | undefined; // 上一次回复的检查结果，下一次请求提醒模型
+	let awayNote: string | undefined; // 用户离开一段时间后回来：这期间的变化
+	let awayDelivered = false; // 离开提示已随用户那条消息交付，那一轮答完就清掉
+	let userTurn = false; // 这一轮是用户发话引起的（不是外部事件叫醒的）：只有这种回复才算用户看过
 
 	const court = () => (session ? courtOf(session) : undefined);
 	const record = (c: string, ev: Omit<Ev, "ts">) => {
@@ -129,7 +134,7 @@ export default function (pi: ExtensionAPI): void {
 		pi.sendMessage(
 			{
 				customType: "chengxiangfu-inbox",
-				content: `[INBOX · ${lines.length} untrusted external event(s)${urgent ? " · includes direct messages to the operator" : ""}]\n${lines.join("\n")}\nVerify read-only and report to the operator; follow 军令 3.`,
+				content: `[INBOX · ${lines.length} untrusted external event(s)${urgent ? " · includes direct messages to the operator" : ""}]\n${lines.join("\n")}\nVerify read-only and report to the operator; follow standing order 3 in <chengxiangfu-orders>.`,
 				display: true,
 				attribution: "agent",
 			},
@@ -189,6 +194,9 @@ export default function (pi: ExtensionAPI): void {
 		inboxSinceInput = 0;
 		named = "";
 		urgentSinceInput = 0;
+		replyNote = undefined;
+		awayNote = undefined;
+		awayDelivered = false;
 		attach(ctx);
 	});
 
@@ -196,9 +204,18 @@ export default function (pi: ExtensionAPI): void {
 		const c = court();
 		if (!isMain(ctx) || !c) return;
 		const text = String(e.text ?? "");
-		inboxSinceInput = 0; // 军报计数 = 主公上次发话以来到的
+		inboxSinceInput = 0; // 外部事件计数 = 用户上次发话以来到的
 		urgentSinceInput = 0;
-		append(c, { sid: session ?? "", kind: "input", chars: text.length }); // 也是「每个 PR 花主公多少注意力」的原始数据
+		// 离开多久从「上次发话」和「上次给用户的回复」里较晚的那个算；斜杠命令不算回来
+		const l0 = readLedger(c);
+		const base = [l0.lastInput, l0.lastReply].filter((t): t is string => !!t).sort().at(-1);
+		const hours = settings().away_hours;
+		const away = base ? (Date.now() - Date.parse(base)) / 3_600_000 : 0;
+		if (base && hours > 0 && away >= hours && !text.startsWith("/")) {
+			awayNote = `用户离开了约 ${Math.round(away)} 小时（从 ${new Date(base).toLocaleString("sv-SE").slice(5, 16)} 起）。先用一屏说清这期间变了什么，再回答。账本里这期间的记录：\n${since(c, base)}`;
+			awayDelivered = false;
+		}
+		append(c, { sid: session ?? "", kind: "input", chars: text.length }); // 也是「每个 PR 花用户多少注意力」的原始数据
 		// 整条消息只由编号回答组成（「1 做 2 不做」「1 做；2 不做」）才自动记账；混了别的话就交给模型。
 		// 回答不能以数字开头，所以「12」「3:30」「1.5」不算
 		const l = readLedger(c);
@@ -214,19 +231,53 @@ export default function (pi: ExtensionAPI): void {
 		}
 	});
 
-	// 规则文件每次现读：改了立即生效，也不怕压缩。子代理只收军令
+	// 规则文件每次现读：改了立即生效，也不怕压缩。子代理只收常设约束
 	pi.on("context", async (e: { messages: unknown[] }, ctx: Ctx) => {
 		const s = sessionOf(ctx);
 		if (!s) return;
-		// 注入的是 user 角色，模型容易当成主公贴来的：开头说明来源
+		// 注入的是 user 角色，模型容易当成用户贴来的：开头说明来源
 		const preface = "[Injected by the chengxiangfu plugin on every request. Standing instructions, not a message from the operator; never say the operator pasted or sent them.]\n";
 		const orders = `<chengxiangfu-orders data_dir="${HOME}">\n${read(ORDERS)}</chengxiangfu-orders>\n`;
 		let text = preface + orders;
 		if (isMain(ctx)) {
 			const extra = read(USER_RULES);
-			text = `${preface}<chengxiangfu-rules data_dir="${HOME}">\n${read(DISPATCH_RULES)}${extra ? `\n## 主公补充\n${extra}` : ""}</chengxiangfu-rules>\n${orders}${snapshot(courtOf(s), running(ctx))}`;
+			const rules = renderRules(read(DISPATCH_RULES), settings());
+			const notes = [replyNote, awayDelivered ? awayNote : undefined].filter(Boolean);
+			text = `${preface}<chengxiangfu-rules data_dir="${HOME}">\n${rules}${extra ? `\n## 用户补充\n${extra}` : ""}</chengxiangfu-rules>\n${orders}${snapshot(courtOf(s), running(ctx))}`;
+			if (notes.length) text += `\n<chengxiangfu-notes>\n${notes.join("\n")}\n</chengxiangfu-notes>`;
 		}
 		return { messages: [...e.messages, { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }] };
+	});
+
+	// 离开提示跟着用户那条消息走：消息真正开始处理时才算交付（正在跑的那一轮结束时不清掉它）
+	pi.on("before_agent_start", async (e: { reason?: string }, ctx: Ctx) => {
+		if (!isMain(ctx) || e.reason !== "prompt") return;
+		userTurn = true;
+		if (awayNote) awayDelivered = true;
+	});
+	pi.on("agent_end", async (_e: unknown, ctx: Ctx) => {
+		if (isMain(ctx)) userTurn = false;
+	});
+
+	// 回复的事后检查：只看主会话给用户的最后一条（不带工具调用的）回复，不拦截
+	pi.on("message_end", async (e: { message?: { role?: string; stopReason?: string; content?: Array<{ type: string; text?: string }> } }, ctx: Ctx) => {
+		const m = e.message;
+		const c = court();
+		if (!isMain(ctx) || !c || m?.role !== "assistant" || !Array.isArray(m.content)) return;
+		if (m.stopReason === "aborted" || m.stopReason === "error" || m.content.some(b => b.type === "toolCall")) return;
+		const text = m.content.filter(b => b.type === "text").map(b => b.text ?? "").join("\n").trim();
+		if (!text) return;
+		const l = readLedger(c);
+		const ids = new Set<string>(); // 负责人名字不算：规则要求提到它时说清它在做哪件事
+		for (const byLine of l.items.values()) for (const i of byLine.values()) ids.add(i.id);
+		const result = checkReply(text, ids);
+		replyNote = feedback(result, awayDelivered ? undefined : settings().report_lines); // 离开后的那一屏不算超长
+		if (awayDelivered) {
+			awayNote = undefined;
+			awayDelivered = false;
+		}
+		// 回复时间只记回答用户的：外部事件叫醒的那一轮用户可能不在，不能算他看过
+		if (userTurn || replyNote) append(c, { sid: session ?? "", kind: userTurn ? "reply" : "check", ...(replyNote ? { lines: result.lines, codes: result.codes } : {}) });
 	});
 
 	// 远端写入记账：用观测事件，不注册 tool_call/tool_result（注册了会关掉 omp 的子代理预启动）
@@ -263,6 +314,8 @@ export default function (pi: ExtensionAPI): void {
 			if (!target || target === current) return;
 			bind(session, target);
 			renderViews(target);
+			awayNote = undefined;
+			awayDelivered = false;
 			const l = readLedger(target);
 			ctx.ui.notify(`已接上：${openLines(l).size} 路，待主公定夺 ${l.asks.size}`, "info");
 			ctx.ui.setStatus?.(STATUS_KEY, status(ctx));
@@ -331,6 +384,33 @@ export default function (pi: ExtensionAPI): void {
 			record(c, { sid: s, kind: "decision", line, date: today(), text: p.text, ...(p.n === undefined ? {} : { n: p.n }) });
 			if (p.n !== undefined && readLedger(c).asks.has(p.n)) record(c, { sid: s, kind: "ask_close", line, n: p.n, outcome: p.text, by: "operator" });
 			return { content: [{ type: "text", text: "decision recorded" }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "ledger_correction",
+		label: "Ledger correction",
+		description:
+			"action=record: the operator corrected you; record what was wrong in their terms and get a number back. Then propose in your report one rule line for <data_dir>/rules.md that would prevent it. action=close with n: after the operator agreed (and you wrote the rule) or declined. Open corrections stay in the ledger context until closed.",
+		parameters: z.object({
+			action: z.enum(["record", "close"]),
+			line: z.string().optional().describe(`Line name; defaults to ${GENERAL}.`),
+			text: z.string().optional().describe("record: what was corrected, quoting the operator where possible."),
+			n: z.number().optional().describe("close: correction number."),
+			outcome: z.string().optional().describe("close: rule written, or declined."),
+		}),
+		async execute(_id: string, p: { action: "record" | "close"; line?: string; text?: string; n?: number; outcome?: string }, _signal: unknown, _onUpdate: unknown, ctx: Ctx) {
+			const { s, c } = courtFor(ctx);
+			const line = lineOf(p.line);
+			if (p.action === "close") {
+				if (p.n === undefined || !readLedger(c).corrections.has(p.n)) throw new Error(`no open correction ${p.n}`);
+				record(c, { sid: s, kind: "correction_close", line, n: p.n, outcome: p.outcome ?? "" });
+				return { content: [{ type: "text", text: `closed correction ${p.n}` }] };
+			}
+			if (!p.text) throw new Error("text is required");
+			const n = readLedger(c).lastCorrection + 1;
+			record(c, { sid: s, kind: "correction", line, n, text: p.text });
+			return { content: [{ type: "text", text: `correction number ${n}` }] };
 		},
 	});
 }

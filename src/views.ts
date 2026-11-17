@@ -1,4 +1,4 @@
-// 沙盘：给人看的 Markdown 视图（courts/<朝廷>/views/），以及每次请求注入的军簿摘要。都由程序生成。
+// 给人看的 Markdown 视图（courts/<朝廷>/views/），以及每次请求注入的账本摘要。都由程序生成。
 import { join } from "node:path";
 import { type Ev, type Item, type Ledger, isDone, openItems, readLedger, today, writeAtomic } from "./ledger";
 import { COURTS } from "./paths";
@@ -31,7 +31,7 @@ export function renderViews(court: string): void {
 	const l = readLedger(court);
 	const dir = viewsOf(court);
 	const asks = [...l.asks.values()].sort((a, b) => a.n - b.n);
-	const out = ["# 沙盘（程序生成，勿手改）", "", `生成时间：${new Date().toLocaleString("sv-SE")}`, "", "## 待主公定夺", ""];
+	const out = ["# 总览（程序生成，勿手改）", "", `生成时间：${new Date().toLocaleString("sv-SE")}`, "", "## 待决定", ""];
 	out.push(...(asks.length ? asks.map(a => `${a.n}. 〔${a.line}〕${a.text}`) : ["（无）"]), "");
 	for (const line of [...l.items.keys()].sort()) {
 		const all = [...(l.items.get(line)?.values() ?? [])];
@@ -41,27 +41,30 @@ export function renderViews(court: string): void {
 		out.push("");
 		writeAtomic(join(dir, fileOf(line)), renderLine(l, line, all));
 	}
-	writeAtomic(join(dir, "沙盘.md"), out.join("\n"));
+	out.push("## 待定的规则提议（用户纠正过、还没决定写不写成规则）", "");
+	out.push(...(l.corrections.size ? [...l.corrections.values()].map(k => `${k.n}. 〔${k.line}〕${k.text}`) : ["（无）"]), "");
+	out.push("## 最近动作（全部线，最多 30 条）", "", ...l.actions.slice(-30).map(a => `- (${a.line ?? "—"}) ${describeAction(a)}`), "");
+	writeAtomic(join(dir, "总览.md"), out.join("\n"));
 }
 
 function renderLine(l: Ledger, line: string, all: Item[]): string {
 	const out = [`# ${line}（程序生成，勿手改）`, "", "## 任务", "", "| # | 任务 | 状态 | 负责 | 下一步 | 催办 | PR | 来源 |", "|---|---|---|---|---|---|---|---|"];
 	for (const i of all) out.push(`| ${i.id} | ${cell(i.title)} | ${cell(i.status)} | ${cell(i.owner)} | ${cell(i.next)} | ${cell(i.chase)} | ${cell(i.pr)} | ${cell(i.source)} |`);
-	out.push("", "## 主公已定", "");
+	out.push("", "## 已定", "");
 	for (const d of l.decisions.filter(d => d.line === line)) out.push(`- ${String(d.date ?? d.ts.slice(0, 10))}：${d.text}`);
 	out.push("", "## 最近动作（最多 30 条）", "");
 	for (const a of l.actions.filter(a => a.line === line).slice(-30)) out.push(`- ${describeAction(a)}`);
 	return `${out.join("\n")}\n`;
 }
 
-// 每次请求注入的军簿摘要：不写进会话历史，所以压缩丢不掉；会话之外发生的事也在里面
+// 每次请求注入的账本摘要：不写进会话历史，所以压缩丢不掉；会话之外发生的事也在里面
 export function snapshot(court: string, running: string[]): string {
 	const l = readLedger(court);
 	const dir = viewsOf(court);
 	const asks = [...l.asks.values()].sort((a, b) => a.n - b.n);
 	const items = openItems(l);
 	const body = [
-		`Today ${today()}. Full board: ${join(dir, "沙盘.md")}; per line: ${join(dir, "<line>.md")}`,
+		`Today ${today()}. Full board: ${join(dir, "总览.md")}; per line: ${join(dir, "<line>.md")}`,
 		`Waiting on the operator (${asks.length}):`,
 		...asks.map(a => `[${a.n}] (${a.line}) ${a.text}`),
 		`Open items (${items.length}):`,
@@ -69,7 +72,8 @@ export function snapshot(court: string, running: string[]): string {
 	];
 	const decisions = l.decisions.slice(-RECENT_DECISIONS);
 	if (decisions.length) body.push(`Operator decisions (latest ${decisions.length}; older ones in the per-line views):`, ...decisions.map(decisionLine));
-	const actions = l.actions.filter(a => a.kind === "action").slice(-5); // 军报不占这 5 条：重启后靠它们防止重复做远端动作
+	if (l.corrections.size) body.push("Open corrections (propose a rule, then ledger_correction close):", ...[...l.corrections.values()].map(k => `[${k.n}] (${k.line}) ${k.text}`));
+	const actions = l.actions.filter(a => a.kind === "action").slice(-5); // 外部事件不占这 5 条：重启后靠它们防止重复做远端动作
 	if (actions.length) body.push("Recent actions:", ...actions.map(a => `- ${describeAction(a)}`));
 	if (running.length) body.push(`Subagents running (${running.length}): ${running.join(", ")}`);
 	let text = body.join("\n");
@@ -80,4 +84,15 @@ export function snapshot(court: string, running: string[]): string {
 		text,
 		"</ledger-context>",
 	].join("\n");
+}
+
+// 某个时间点之后账本里的变化：用户离开后回来时给模型看
+export function since(court: string, ts: string): string {
+	const l = readLedger(court);
+	const out: string[] = [];
+	for (const byLine of l.items.values()) for (const i of byLine.values()) if (i.updated > ts) out.push(itemLine(i));
+	for (const d of l.decisions) if (d.ts > ts) out.push(decisionLine(d));
+	for (const a of l.actions) if (a.ts > ts) out.push(`- ${describeAction(a)}`);
+	if (!out.length) return "（账本里没有新记录；外部系统的变化要去查）";
+	return out.length > 30 ? [`…前面还有 ${out.length - 30} 条，见 ${join(viewsOf(court), "总览.md")} 的「最近动作」`, ...out.slice(-30)].join("\n") : out.join("\n");
 }
