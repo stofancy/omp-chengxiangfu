@@ -1,0 +1,12 @@
+{"type": "session", "version": 3, "id": "s1", "timestamp": "2026-11-10T08:59:00Z", "cwd": "/x"}
+{"type": "message", "id": "2026-11-10T09:00:00Z", "timestamp": "2026-11-10T09:00:00Z", "message": {"role": "user", "content": [{"type": "text", "text": "你好 世界"}], "attribution": "user", "timestamp": 1794301200000}}
+{"type": "message", "timestamp": "2026-11-10T09:01:00Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "助手回复不计入"}], "timestamp": 1794301260000}}
+{"type": "message", "timestamp": "2026-11-10T09:01:30Z", "message": {"role": "toolResult", "content": [{"type": "text", "text": "工具结果不计入"}], "timestamp": 1794301290000}}
+{"type": "custom_message", "customType": "chengxiangfu-inbox", "timestamp": "2026-11-10T09:02:00Z", "content": "插件注入不计入"}
+{"type": "message", "id": "2026-11-10T09:03:00Z", "timestamp": "2026-11-10T09:03:00Z", "message": {"role": "user", "content": "继续 ABC-100 的活", "attribution": "user", "timestamp": 1794301380000, "steering": true}}
+{"type": "message", "id": "2026-11-10T09:10:00Z", "timestamp": "2026-11-10T09:10:00Z", "message": {"role": "user", "content": [{"type": "text", "text": "系统注入的消息不计入"}], "attribution": "agent", "timestamp": 1794301800000}}
+{"type": "message", "id": "2026-11-10T09:20:00Z", "timestamp": "2026-11-10T09:20:00Z", "message": {"role": "user", "content": [{"type": "text", "text": "好"}], "attribution": "user", "timestamp": 1794302400000}}
+{"type": "message", "id": "2026-11-11T10:00:00Z", "timestamp": "2026-11-11T10:00:00Z", "message": {"role": "user", "content": [{"type": "text", "text": "两个任务 abc-200 ABC-100"}], "attribution": "user", "timestamp": 1794391200000}}
+{"type": "message", "id": "2026-11-11T10:05:00Z", "timestamp": "2026-11-11T10:05:00Z", "message": {"role": "user", "content": [{"type": "text", "text": "没有编号"}], "attribution": "user", "timestamp": 1794391500000}}
+{"type": "message", "id": "2026-11-11T10:10:01Z", "timestamp": "2026-11-11T10:10:01Z", "message": {"role": "user", "content": [{"type": "text", "text": "还是没有"}], "attribution": "user", "timestamp": 1794391801000}}
+{"type": "message", "id": "2026-11-20T10:00:00Z", "timestamp": "2026-11-20T10:00:00Z", "message": {"role": "user", "content": [{"type": "text", "text": "范围之外"}], "attribution": "user", "timestamp": 1795168800000}}

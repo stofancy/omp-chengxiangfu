@@ -1,0 +1,11 @@
+{"ts": "2026-11-05T08:00:00Z", "sid": "c1", "kind": "decision", "line": "ABC-100", "text": "范围之外"}
+{"ts": "2026-11-10T08:00:00Z", "sid": "c1", "kind": "item", "line": "ABC-100", "id": "T1"}
+{"ts": "2026-11-10T09:30:00Z", "sid": "c1", "kind": "ask", "line": "ABC-100", "n": 1, "text": "问"}
+{"ts": "2026-11-10T09:31:00Z", "sid": "c1", "kind": "decision", "line": "ABC-100", "n": 1, "text": "答"}
+{"ts": "2026-11-10T09:40:00Z", "sid": "c1", "kind": "decision", "line": "ABC-100", "text": "再定"}
+{"ts": "2026-11-11T09:00:00Z", "sid": "c1", "kind": "correction", "line": "ABC-100", "text": "改"}
+{"ts": "2026-11-11T09:30:00Z", "sid": "c1", "kind": "ask_close", "line": "ABC-100", "n": 1, "outcome": "做"}
+{"ts": "2026-11-11T11:00:00Z", "sid": "c1", "kind": "decision", "line": "ABC-200", "text": "定"}
+{"ts": "2026-11-11T11:10:00Z", "sid": "c1", "kind": "ask", "line": "日常", "n": 2, "text": "问"}
+{"ts": "2026-11-11T11:20:00Z", "sid": "c1", "kind": "input"}
+{"ts": "2026-11-20T11:00:00Z", "sid": "c1", "kind": "decision", "line": "ABC-100", "text": "范围之外"}
