@@ -1,4 +1,4 @@
-// 数据目录：各账本、会话与账本的绑定、外部消息。和代码分开。
+// 数据目录：任务表、外部消息。和代码分开。
 // 默认 $XDG_DATA_HOME/chengxiangfu（通常是 ~/.local/share/chengxiangfu），可用 CHENGXIANGFU_HOME 覆盖。
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -6,8 +6,7 @@ import { fileURLToPath } from "node:url";
 
 export const HOME = process.env.CHENGXIANGFU_HOME ?? join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local/share"), "chengxiangfu");
 
-export const COURTS = join(HOME, "courts"); // courts/<账本>/events.jsonl、views/
-export const BINDINGS = join(HOME, "bindings"); // bindings/<会话> 的内容是它接上的账本；没有文件就是会话自己的账本
+export const TASKS = join(HOME, "tasks"); // tasks/events.jsonl、views/：全局唯一一份任务表
 export const INBOX_NEW = join(HOME, "inbox/new");
 export const INBOX_CLAIMED = join(HOME, "inbox/claimed");
 export const ERRLOG = join(HOME, "logs/extension-errors.log");

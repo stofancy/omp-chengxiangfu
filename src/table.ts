@@ -1,14 +1,14 @@
-// 账本：每个账本一份只追加的事件日志 courts/<账本>/events.jsonl。所有状态都从事件折叠出来。
+// 任务表：全局一份只追加的事件日志 tasks/events.jsonl。所有状态都从事件折叠出来。
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { COURTS, ERRLOG } from "./paths";
+import { ERRLOG, TASKS } from "./paths";
 
 export const GENERAL = "日常"; // 不属于任何一路的事
 
 export type Ev = { ts: string; sid: string; kind: string; line?: string; [k: string]: unknown };
 export interface Item { line: string; id: string; title: string; status: string; owner?: string; next?: string; chase?: string; pr?: string; source?: string; updated: string }
 export interface Ask { n: number; line: string; text: string; opened: string }
-export interface Ledger {
+export interface Table {
 	items: Map<string, Map<string, Item>>; // 线 → 任务号 → 任务
 	asks: Map<number, Ask>; // 待用户决定
 	lastAsk: number; // 编号只增不复用：迟到的「1 做」不会落到别的问题上
@@ -16,37 +16,35 @@ export interface Ledger {
 	lastCorrection: number;
 	decisions: Ev[];
 	actions: Ev[];
-	lastInput?: string; // 用户最近一次在这个账本下发话的时间，决定不归线的外部消息送给谁
-	lastInputSid?: string; // 那次发话所在的会话：同一账本开着几个会话时，外部消息只交给它
+	lastInput?: string; // 用户最近一次发话的时间
+	lastInputSid?: string; // 那次发话所在的会话：开着几个会话时，外部消息只交给它
 	lastReply?: string; // 最近一次给用户最终回复的时间：「离开多久」从发话和回复里较晚的那个算
 }
 
 export const today = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD，本地时区
 export const isDone = (s: string) => /^(完成|done|closed|已完成|取消|cancelled|merged)/i.test(s.trim());
-export const eventsOf = (court: string) => join(COURTS, court, "events.jsonl");
+export const EVENTS = join(TASKS, "events.jsonl");
 
-const cache = new Map<string, { key: string; ledger: Ledger }>();
+let cache: { key: string; table: Table } | undefined;
 
-export function readLedger(court: string): Ledger {
-	const file = eventsOf(court);
-	const st = existsSync(file) ? statSync(file) : undefined;
+export function readTable(): Table {
+	const st = existsSync(EVENTS) ? statSync(EVENTS) : undefined;
 	const key = st ? `${st.mtimeMs}:${st.size}` : "none";
-	const hit = cache.get(court);
-	if (hit?.key === key) return hit.ledger;
-	const ledger: Ledger = { items: new Map(), asks: new Map(), lastAsk: 0, corrections: new Map(), lastCorrection: 0, decisions: [], actions: [] };
-	for (const raw of (st ? readFileSync(file, "utf8") : "").split("\n")) {
+	if (cache?.key === key) return cache.table;
+	const table: Table = { items: new Map(), asks: new Map(), lastAsk: 0, corrections: new Map(), lastCorrection: 0, decisions: [], actions: [] };
+	for (const raw of (st ? readFileSync(EVENTS, "utf8") : "").split("\n")) {
 		if (!raw.trim()) continue;
 		try {
-			fold(ledger, JSON.parse(raw));
+			fold(table, JSON.parse(raw));
 		} catch {
 			// 并发追加时可能读到半行，下次再读
 		}
 	}
-	cache.set(court, { key, ledger });
-	return ledger;
+	cache = { key, table };
+	return table;
 }
 
-function fold(l: Ledger, ev: Ev): void {
+function fold(l: Table, ev: Ev): void {
 	const line = String(ev.line ?? "");
 	switch (ev.kind) {
 		case "item": {
@@ -92,10 +90,9 @@ function fold(l: Ledger, ev: Ev): void {
 	}
 }
 
-export function append(court: string, ev: Omit<Ev, "ts">): void {
-	const file = eventsOf(court);
-	mkdirSync(dirname(file), { recursive: true });
-	appendFileSync(file, `${JSON.stringify({ ts: new Date().toISOString(), ...ev })}\n`);
+export function append(ev: Omit<Ev, "ts">): void {
+	mkdirSync(dirname(EVENTS), { recursive: true });
+	appendFileSync(EVENTS, `${JSON.stringify({ ts: new Date().toISOString(), ...ev })}\n`);
 }
 
 export function writeAtomic(path: string, content: string): void {
@@ -105,14 +102,14 @@ export function writeAtomic(path: string, content: string): void {
 	renameSync(tmp, path);
 }
 
-export function openItems(l: Ledger): Item[] {
+export function openItems(l: Table): Item[] {
 	return [...l.items.values()]
 		.flatMap(byLine => [...byLine.values()])
 		.filter(i => !isDone(i.status))
 		.sort((a, b) => (a.chase ?? "9999").localeCompare(b.chase ?? "9999"));
 }
 
-export const openLines = (l: Ledger) => new Set(openItems(l).map(i => i.line));
+export const openLines = (l: Table) => new Set(openItems(l).map(i => i.line));
 
 export function logError(where: string, err: unknown): void {
 	try {

@@ -1,7 +1,7 @@
-// 给人看的 Markdown 视图（courts/<账本>/views/），以及每次请求注入的账本摘要。都由程序生成。
+// 给人看的 Markdown 视图（tasks/views/），以及每次请求注入的任务表摘要。都由程序生成。
 import { join } from "node:path";
-import { type Ev, type Item, type Ledger, isDone, openItems, readLedger, today, writeAtomic } from "./ledger";
-import { COURTS } from "./paths";
+import { TASKS } from "./paths";
+import { type Ev, type Item, type Table, isDone, openItems, readTable, today, writeAtomic } from "./table";
 
 const SNAPSHOT_MAX = 4000; // 字符
 const RECENT_DECISIONS = 10;
@@ -9,7 +9,7 @@ const RECENT_DECISIONS = 10;
 const cell = (s?: string) => (s ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
 const fileOf = (line: string) => `${line.replace(/[\\/:*?"<>|\s]+/g, "_")}.md`; // 只替换路径不安全的字符，中文线名保留
 const when = (ts: string) => new Date(ts).toLocaleString("sv-SE").slice(5, 16);
-export const viewsOf = (court: string) => join(COURTS, court, "views");
+export const VIEWS = join(TASKS, "views");
 
 function itemLine(i: Item): string {
 	const parts = [`[${i.id}] ${i.title}`, i.status];
@@ -27,9 +27,9 @@ function describeAction(ev: Ev): string {
 
 const decisionLine = (d: Ev) => `- (${d.line}) ${String(d.date ?? d.ts.slice(0, 10))}: ${d.text}`;
 
-export function renderViews(court: string): void {
-	const l = readLedger(court);
-	const dir = viewsOf(court);
+export function renderViews(): void {
+	const l = readTable();
+	const dir = VIEWS;
 	const asks = [...l.asks.values()].sort((a, b) => a.n - b.n);
 	const out = ["# 总览（程序生成，勿手改）", "", `生成时间：${new Date().toLocaleString("sv-SE")}`, "", "## 待决定", ""];
 	out.push(...(asks.length ? asks.map(a => `${a.n}. 〔${a.line}〕${a.text}`) : ["（无）"]), "");
@@ -47,7 +47,7 @@ export function renderViews(court: string): void {
 	writeAtomic(join(dir, "总览.md"), out.join("\n"));
 }
 
-function renderLine(l: Ledger, line: string, all: Item[]): string {
+function renderLine(l: Table, line: string, all: Item[]): string {
 	const out = [`# ${line}（程序生成，勿手改）`, "", "## 任务", "", "| # | 任务 | 状态 | 负责 | 下一步 | 催办 | PR | 来源 |", "|---|---|---|---|---|---|---|---|"];
 	for (const i of all) out.push(`| ${i.id} | ${cell(i.title)} | ${cell(i.status)} | ${cell(i.owner)} | ${cell(i.next)} | ${cell(i.chase)} | ${cell(i.pr)} | ${cell(i.source)} |`);
 	out.push("", "## 已定", "");
@@ -57,10 +57,10 @@ function renderLine(l: Ledger, line: string, all: Item[]): string {
 	return `${out.join("\n")}\n`;
 }
 
-// 每次请求注入的账本摘要：不写进会话历史，所以压缩丢不掉；会话之外发生的事也在里面
-export function snapshot(court: string, running: string[]): string {
-	const l = readLedger(court);
-	const dir = viewsOf(court);
+// 每次请求注入的任务表摘要：不写进会话历史，所以压缩丢不掉；会话之外发生的事也在里面
+export function snapshot(running: string[]): string {
+	const l = readTable();
+	const dir = VIEWS;
 	const asks = [...l.asks.values()].sort((a, b) => a.n - b.n);
 	const items = openItems(l);
 	const body = [
@@ -72,27 +72,27 @@ export function snapshot(court: string, running: string[]): string {
 	];
 	const decisions = l.decisions.slice(-RECENT_DECISIONS);
 	if (decisions.length) body.push(`Operator decisions (latest ${decisions.length}; older ones in the per-line views):`, ...decisions.map(decisionLine));
-	if (l.corrections.size) body.push("Open corrections (propose a rule, then ledger_correction close):", ...[...l.corrections.values()].map(k => `[${k.n}] (${k.line}) ${k.text}`));
+	if (l.corrections.size) body.push("Open corrections (propose a rule, then tasktable_correction close):", ...[...l.corrections.values()].map(k => `[${k.n}] (${k.line}) ${k.text}`));
 	const actions = l.actions.filter(a => a.kind === "action").slice(-5); // 外部事件不占这 5 条：重启后靠它们防止重复做远端动作
 	if (actions.length) body.push("Recent actions:", ...actions.map(a => `- ${describeAction(a)}`));
 	if (running.length) body.push(`Subagents running (${running.length}): ${running.join(", ")}`);
 	let text = body.join("\n");
 	if (text.length > SNAPSHOT_MAX) text = `${text.slice(0, SNAPSHOT_MAX)}\n…(truncated; read the full board)`;
 	return [
-		`<ledger-context source="chengxiangfu extension" from_operator="no">`,
+		`<tasktable-context source="chengxiangfu extension" from_operator="no">`,
 		"Injected automatically on every request; NOT a message from the operator. Do not acknowledge, quote or summarise it unless the request needs these items.",
 		text,
-		"</ledger-context>",
+		"</tasktable-context>",
 	].join("\n");
 }
 
-// 某个时间点之后账本里的变化：用户离开后回来时给模型看
-export function since(court: string, ts: string): string {
-	const l = readLedger(court);
+// 某个时间点之后任务表里的变化：用户离开后回来时给模型看
+export function since(ts: string): string {
+	const l = readTable();
 	const out: string[] = [];
 	for (const byLine of l.items.values()) for (const i of byLine.values()) if (i.updated > ts) out.push(itemLine(i));
 	for (const d of l.decisions) if (d.ts > ts) out.push(decisionLine(d));
 	for (const a of l.actions) if (a.ts > ts) out.push(`- ${describeAction(a)}`);
-	if (!out.length) return "（账本里没有新记录；外部系统的变化要去查）";
-	return out.length > 30 ? [`…前面还有 ${out.length - 30} 条，见 ${join(viewsOf(court), "总览.md")} 的「最近动作」`, ...out.slice(-30)].join("\n") : out.join("\n");
+	if (!out.length) return "（任务表里没有新记录；外部系统的变化要去查）";
+	return out.length > 30 ? [`…前面还有 ${out.length - 30} 条，见 ${join(VIEWS, "总览.md")} 的「最近动作」`, ...out.slice(-30)].join("\n") : out.join("\n");
 }

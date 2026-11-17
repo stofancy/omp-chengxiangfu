@@ -1,7 +1,7 @@
 // 规则的可调参数（数据目录 config.json 的 rules 段），以及回复的事后检查。
 // 参数由程序填进规则文本，模型不用自己读配置。
 import { existsSync, readFileSync } from "node:fs";
-import { logError } from "./ledger";
+import { logError } from "./table";
 import { CONFIG } from "./paths";
 
 export interface RuleSettings {
