@@ -27,7 +27,7 @@ def iso_now():
 
 
 def github(state):
-    me = state.setdefault("gh_me", run_json(["gh", "api", "user"])["login"])
+    me = state.get("gh_me") or state.setdefault("gh_me", run_json(["gh", "api", "user"])["login"])
     seen = state.setdefault("gh", {})
     prs = run_json(["gh", "search", "prs", "--author=@me", "--state=open", "--limit", "50", "--json", "url,number,repository,title,updatedAt"])
     for pr in prs:
@@ -59,7 +59,7 @@ def github(state):
 def ado(state, org):
     base = f"https://dev.azure.com/{org}"
     rest = ["az", "rest", "--resource", ADO_RESOURCE, "--url"]
-    me = state.setdefault("ado_me", run_json([*rest, f"https://vssps.dev.azure.com/{org}/_apis/connectionData"])["authenticatedUser"]["id"])
+    me = state.get("ado_me") or state.setdefault("ado_me", run_json([*rest, f"https://vssps.dev.azure.com/{org}/_apis/connectionData"])["authenticatedUser"]["id"])
     seen = state.setdefault("ado", {})
     prs = run_json([*rest, f"{base}/_apis/git/pullrequests?searchCriteria.creatorId={me}&searchCriteria.status=active&api-version=7.1"])["value"]
     for pr in prs:

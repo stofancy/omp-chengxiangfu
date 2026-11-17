@@ -35,6 +35,20 @@ def display_name(uid, users):
     return users[uid]
 
 
+THREAD_WINDOW = 7 * 86400  # 只看最近 7 天发起的 thread 里的新回复
+
+
+def history(ch, oldest):
+    """翻页读完 oldest 之后的全部顶层消息：只读第一页会在消息多时永久漏掉。"""
+    cursor = None
+    while True:
+        page = api("conversations.history", channel=ch, oldest=oldest, limit=200, **({"cursor": cursor} if cursor else {}))
+        yield from page.get("messages", [])
+        cursor = page.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            return
+
+
 def main():
     cursors = load_state("slack-cursor.json", {})
     users = load_state("slack-users.json", {})
@@ -46,7 +60,7 @@ def main():
             continue
         cur = float(cursors[ch])
         newest = cur
-        for m in api("conversations.history", channel=ch, limit=200).get("messages", []):
+        for m in history(ch, f"{cur - THREAD_WINDOW:.6f}"):
             ts = float(m["ts"])
             newest = max(newest, ts)
             if ts > cur and m.get("user") != ME and m.get("subtype") in (None, "thread_broadcast"):
@@ -63,7 +77,7 @@ def main():
         link = f"https://{SLACK['domain']}.slack.com/archives/{ch}/p{m['ts'].replace('.', '')}" + (f"?thread_ts={parent}" if parent else "")
         urgent = ch.startswith("D") or f"<@{ME}>" in m.get("text", "")
         where = meta["name"] + (" (thread reply)" if parent else "")
-        written += write_event("slack", display_name(m.get("user", "?"), users), where, link, line=meta.get("line"), urgent=urgent,
+        written += write_event("slack", display_name(m.get("user", "?"), users), where, link, line=None if urgent else meta.get("line"), urgent=urgent,
                                key=f"{ch}-{m['ts']}", order_ns=int(float(m["ts"]) * 1e9))
     # 游标在军报写完之后才保存：中途失败下次会重读，宁可重复不丢
     save_state("slack-users.json", users)

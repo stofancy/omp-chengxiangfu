@@ -20,12 +20,13 @@ def main():
     today = date.today().isoformat()
     now = datetime.now().astimezone()
     for r in json.loads(FILE.read_text()):
-        if r.get("done") or r.get("due", "9999") > today or sent.get(r["id"]) == today:
+        rid = str(r["id"])  # 状态文件是 JSON，键总是字符串
+        if r.get("done") or r.get("due", "9999") > today or sent.get(rid) == today:
             continue
-        if r.get("until") and datetime.fromisoformat(r["until"]) <= now:
+        if r.get("until") and datetime.fromisoformat(r["until"]).astimezone() <= now:  # 不带时区的按本地时间
             continue
-        write_event("reminder", FILE.name, r["id"], str(FILE), line=SPEC.get("line", "日常"), note=f"due {r['due']}: {r['text'][:200]}", urgent=True)
-        sent[r["id"]] = today
+        write_event("reminder", FILE.name, rid, str(FILE), line=SPEC.get("line", "日常"), note=f"due {r['due']}: {r['text'][:200]}", urgent=True)
+        sent[rid] = today
     save_state("reminders.json", sent)
 
 

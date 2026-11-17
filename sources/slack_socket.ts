@@ -44,7 +44,8 @@ async function handle(ev: SlackMessage): Promise<void> {
 	const reply = ev.thread_ts && ev.thread_ts !== ev.ts;
 	const place = watched?.name ?? (ev.channel_type === "im" ? `DM ${who}` : direct ? "group DM" : await lookup("conversations.info", "channel", ev.channel));
 	const link = `https://${slack.domain}.slack.com/archives/${ev.channel}/p${ev.ts.replace(".", "")}${reply ? `?thread_ts=${ev.thread_ts}` : ""}`;
-	const event = { source: "slack", who, where: place + (reply ? " (thread reply)" : ""), link, line: watched?.line, urgent: direct || mention };
+	// 私信和 @ 你的消息不归线：送到你最近发过话的朝廷
+	const event = { source: "slack", who, where: place + (reply ? " (thread reply)" : ""), link, line: direct || mention ? undefined : watched?.line, urgent: direct || mention };
 	const [sec, frac = ""] = ev.ts.split(".");
 	if (writeEvent(event, `${ev.channel}-${ev.ts}`, BigInt(sec) * 1_000_000_000n + BigInt(frac.padEnd(9, "0").slice(0, 9)))) {
 		log(`inbox ${event.where} from ${who}${event.urgent ? " (urgent)" : ""}`);
