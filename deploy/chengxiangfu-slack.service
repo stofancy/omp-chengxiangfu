@@ -1,0 +1,13 @@
+# systemd 用户服务：Slack 实时推送。把 <bun> 和 <repo> 换成实际路径后放到 ~/.config/systemd/user/，
+# 再 systemctl --user enable --now chengxiangfu-slack；WSL 等无登录会话的环境还要 loginctl enable-linger。
+[Unit]
+Description=丞相府：Slack 实时推送写军报
+After=network-online.target
+
+[Service]
+ExecStart=<bun> <repo>/sources/slack_socket.ts
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,13 @@
+{
+  "name": "omp-chengxiangfu",
+  "version": "0.1.0",
+  "description": "丞相府：把一个 oh-my-pi（omp）主会话变成调度器。敲 /上朝 之前什么都不做。",
+  "type": "module",
+  "license": "MIT",
+  "author": "stofancy",
+  "keywords": ["omp", "oh-my-pi", "omp-plugin", "agent", "orchestration"],
+  "files": ["src", "rules", "sources", "deploy", "config.example.json", "README.md", "LICENSE"],
+  "omp": {
+    "extensions": ["./src/index.ts"]
+  }
+}

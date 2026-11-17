@@ -1,0 +1,14 @@
+{
+  "line_pattern": "^\\s*([A-Z][A-Z0-9]+-\\d+)\\b",
+  "slack": {
+    "domain": "your-workspace",
+    "me": "U0123456789",
+    "user_token": { "file": "~/.config/slack/credentials.json", "json_key": "token" },
+    "app_token": { "file": "~/.config/slack/app-token" },
+    "channels": {
+      "C0123456789": { "name": "#some-project", "line": "PROJ-123" }
+    }
+  },
+  "ado": { "org": "your-ado-org" },
+  "reminders": { "file": "~/.config/reminders.json", "line": "日常" }
+}
