@@ -12,7 +12,9 @@ export const INBOX_CLAIMED = join(HOME, "inbox/claimed");
 export const ERRLOG = join(HOME, "logs/extension-errors.log");
 export const USER_RULES = join(HOME, "rules.md"); // 用户自己的补充规则，接在插件规则后面
 export const CONFIG = join(HOME, "config.json"); // 规则参数（rules 段）和外部事件源的配置
+export const DISPATCH_STATE = join(HOME, "state/dispatch"); // 调度器模式的开关：每个打开的主会话一个文件
 
 const prompt = (name: string) => fileURLToPath(new URL(`../prompts/${name}`, import.meta.url));
 export const DISPATCH_RULES = prompt("调度规则.md");
+export const OWNER_RULES = prompt("负责人规则.md");
 export const ORDERS = prompt("常设约束.md");

@@ -1,24 +1,25 @@
-// 给人看的 Markdown 视图（tasks/views/），以及每次请求注入的任务表摘要。都由程序生成。
+// 给人看的 Markdown 视图（tasks/views/），以及每次请求注入的任务表摘要和任务卡。都由程序生成。
 import { join } from "node:path";
 import { TASKS } from "./paths";
-import { type Ev, type Item, type Table, isDone, openItems, readTable, today, writeAtomic } from "./table";
+import { type Ev, GENERAL, type Item, type Table, type Task, isDone, openItems, openTasks, readTable, today, writeAtomic } from "./table";
 
 const SNAPSHOT_MAX = 4000; // 字符
 const RECENT_DECISIONS = 10;
 
 const cell = (s?: string) => (s ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
-const fileOf = (line: string) => `${line.replace(/[\\/:*?"<>|\s]+/g, "_")}.md`; // 只替换路径不安全的字符，中文线名保留
+const fileOf = (task: string) => `${task.replace(/[\\/:*?"<>|\s]+/g, "_")}.md`; // 只替换路径不安全的字符，中文任务名保留
 const when = (ts: string) => new Date(ts).toLocaleString("sv-SE").slice(5, 16);
 export const VIEWS = join(TASKS, "views");
 
 function itemLine(i: Item): string {
 	const parts = [`[${i.id}] ${i.title}`, i.status];
-	if (i.owner) parts.push(`owner: ${i.owner}`);
 	if (i.next) parts.push(`next: ${i.next}`);
 	if (i.chase) parts.push(`chase ${i.chase}`);
 	if (i.pr) parts.push(`PR ${i.pr}`);
-	return `- (${i.line}) ${parts.join(" | ")}`;
+	return `- ${parts.join(" | ")}`;
 }
+
+const taskHead = (t: Task) => `${t.name}${t.title ? ` ${t.title}` : ""} | owner ${t.agent ? `agent://${t.agent}` : "none"} | watching ${t.watch.length}`;
 
 function describeAction(ev: Ev): string {
 	if (ev.kind === "inbox") return `${when(ev.ts)} inbox ${ev.source}: ${ev.who ?? ""} @ ${ev.where ?? ""}`;
@@ -29,53 +30,64 @@ const decisionLine = (d: Ev) => `- (${d.line}) ${String(d.date ?? d.ts.slice(0, 
 
 export function renderViews(): void {
 	const l = readTable();
-	const dir = VIEWS;
 	const asks = [...l.asks.values()].sort((a, b) => a.n - b.n);
 	const out = ["# 总览（程序生成，勿手改）", "", `生成时间：${new Date().toLocaleString("sv-SE")}`, "", "## 待决定", ""];
 	out.push(...(asks.length ? asks.map(a => `${a.n}. 〔${a.line}〕${a.text}`) : ["（无）"]), "");
-	for (const line of [...l.items.keys()].sort()) {
-		const all = [...(l.items.get(line)?.values() ?? [])];
+	for (const name of [...l.tasks.keys()].sort()) {
+		const t = l.tasks.get(name) as Task;
+		const all = [...(l.items.get(name)?.values() ?? [])];
 		const open = all.filter(i => !isDone(i.status));
-		out.push(`## ${line}（未完成 ${open.length} / 共 ${all.length}）`, "", "| # | 任务 | 状态 | 负责 | 下一步 | 催办 | PR |", "|---|---|---|---|---|---|---|");
-		for (const i of open) out.push(`| ${i.id} | ${cell(i.title)} | ${cell(i.status)} | ${cell(i.owner)} | ${cell(i.next)} | ${cell(i.chase)} | ${cell(i.pr)} |`);
+		const done = isDone(t.status) ? `，${t.status}` : "";
+		out.push(`## ${name}${t.title ? ` ${t.title}` : ""}（未完成事项 ${open.length} / 共 ${all.length}${done}）`, "");
+		if (name !== GENERAL) out.push(`负责 agent：${t.agent || "（无）"}；盯的外部输入：${t.watch.length} 个`, "");
+		out.push("| # | 事项 | 状态 | 下一步 | 催办 | PR |", "|---|---|---|---|---|---|");
+		for (const i of open) out.push(`| ${i.id} | ${cell(i.title)} | ${cell(i.status)} | ${cell(i.next)} | ${cell(i.chase)} | ${cell(i.pr)} |`);
 		out.push("");
-		writeAtomic(join(dir, fileOf(line)), renderLine(l, line, all));
+		writeAtomic(join(VIEWS, fileOf(name)), renderTask(l, t, all));
 	}
 	out.push("## 待定的规则提议（用户纠正过、还没决定写不写成规则）", "");
 	out.push(...(l.corrections.size ? [...l.corrections.values()].map(k => `${k.n}. 〔${k.line}〕${k.text}`) : ["（无）"]), "");
-	out.push("## 最近动作（全部线，最多 30 条）", "", ...l.actions.slice(-30).map(a => `- (${a.line ?? "—"}) ${describeAction(a)}`), "");
-	writeAtomic(join(dir, "总览.md"), out.join("\n"));
+	out.push("## 最近动作（全部任务，最多 30 条）", "", ...l.actions.slice(-30).map(a => `- (${a.line ?? "—"}) ${describeAction(a)}`), "");
+	writeAtomic(join(VIEWS, "总览.md"), out.join("\n"));
 }
 
-function renderLine(l: Table, line: string, all: Item[]): string {
-	const out = [`# ${line}（程序生成，勿手改）`, "", "## 任务", "", "| # | 任务 | 状态 | 负责 | 下一步 | 催办 | PR | 来源 |", "|---|---|---|---|---|---|---|---|"];
-	for (const i of all) out.push(`| ${i.id} | ${cell(i.title)} | ${cell(i.status)} | ${cell(i.owner)} | ${cell(i.next)} | ${cell(i.chase)} | ${cell(i.pr)} | ${cell(i.source)} |`);
+function renderTask(l: Table, t: Task, all: Item[]): string {
+	const out = [`# ${t.name}${t.title ? ` ${t.title}` : ""}（程序生成，勿手改）`, ""];
+	if (t.name !== GENERAL) {
+		out.push(`- 状态：${t.status || "进行中"}`, `- 负责 agent：${t.agent || "（无）"}`, `- 目标：${t.goal || "（无）"}`, `- 完成判据：${t.doneWhen || "（无）"}`, `- 盯的外部输入：${t.watch.length ? "" : "（无）"}`);
+		out.push(...t.watch.map(w => `  - ${w}`), "");
+	}
+	out.push("## 事项", "", "| # | 事项 | 状态 | 下一步 | 催办 | PR | 来源 |", "|---|---|---|---|---|---|---|");
+	for (const i of all) out.push(`| ${i.id} | ${cell(i.title)} | ${cell(i.status)} | ${cell(i.next)} | ${cell(i.chase)} | ${cell(i.pr)} | ${cell(i.source)} |`);
 	out.push("", "## 已定", "");
-	for (const d of l.decisions.filter(d => d.line === line)) out.push(`- ${String(d.date ?? d.ts.slice(0, 10))}：${d.text}`);
+	for (const d of l.decisions.filter(d => d.line === t.name)) out.push(`- ${String(d.date ?? d.ts.slice(0, 10))}：${d.text}`);
 	out.push("", "## 最近动作（最多 30 条）", "");
-	for (const a of l.actions.filter(a => a.line === line).slice(-30)) out.push(`- ${describeAction(a)}`);
+	for (const a of l.actions.filter(a => a.line === t.name).slice(-30)) out.push(`- ${describeAction(a)}`);
 	return `${out.join("\n")}\n`;
 }
 
-// 每次请求注入的任务表摘要：不写进会话历史，所以压缩丢不掉；会话之外发生的事也在里面
+// 每次请求注入主会话的任务表摘要：不写进会话历史，所以压缩丢不掉；会话之外发生的事也在里面
 export function snapshot(running: string[]): string {
 	const l = readTable();
-	const dir = VIEWS;
 	const asks = [...l.asks.values()].sort((a, b) => a.n - b.n);
+	const tasks = openTasks(l);
 	const items = openItems(l);
+	const names = new Set(tasks.map(t => t.name));
+	const loose = items.filter(i => !names.has(i.line));
 	const body = [
-		`Today ${today()}. Full board: ${join(dir, "总览.md")}; per line: ${join(dir, "<line>.md")}`,
+		`Today ${today()}. Full board: ${join(VIEWS, "总览.md")}; per task (goal, completion criteria, watched inputs): ${join(VIEWS, "<task>.md")}`,
 		`Waiting on the operator (${asks.length}):`,
 		...asks.map(a => `[${a.n}] (${a.line}) ${a.text}`),
-		`Open items (${items.length}):`,
-		...items.map(itemLine),
+		`Open tasks (${tasks.length}):`,
+		...tasks.flatMap(t => [taskHead(t), ...items.filter(i => i.line === t.name).map(itemLine)]),
 	];
+	if (loose.length) body.push(`Open items outside any task (${loose.length}):`, ...loose.map(itemLine));
 	const decisions = l.decisions.slice(-RECENT_DECISIONS);
-	if (decisions.length) body.push(`Operator decisions (latest ${decisions.length}; older ones in the per-line views):`, ...decisions.map(decisionLine));
+	if (decisions.length) body.push(`Operator decisions (latest ${decisions.length}; older ones in the per-task views):`, ...decisions.map(decisionLine));
 	if (l.corrections.size) body.push("Open corrections (propose a rule, then tasktable_correction close):", ...[...l.corrections.values()].map(k => `[${k.n}] (${k.line}) ${k.text}`));
 	const actions = l.actions.filter(a => a.kind === "action").slice(-5); // 外部事件不占这 5 条：重启后靠它们防止重复做远端动作
 	if (actions.length) body.push("Recent actions:", ...actions.map(a => `- ${describeAction(a)}`));
-	if (running.length) body.push(`Subagents running (${running.length}): ${running.join(", ")}`);
+	if (running.length) body.push(`Agents running (${running.length}): ${running.join(", ")}`);
 	let text = body.join("\n");
 	if (text.length > SNAPSHOT_MAX) text = `${text.slice(0, SNAPSHOT_MAX)}\n…(truncated; read the full board)`;
 	return [
@@ -86,11 +98,23 @@ export function snapshot(running: string[]): string {
 	].join("\n");
 }
 
+// 每次请求注入给任务的负责 agent：这个任务登记在任务表里的内容。压缩之后它也还看得到自己负责什么、盯着什么
+export function taskCard(t: Task): string {
+	return [
+		`<task-card task="${t.name}">`,
+		`任务：${t.name}${t.title ? ` ${t.title}` : ""}`,
+		`目标：${t.goal || "（没登记）"}`,
+		`完成判据：${t.doneWhen || "（没登记）"}`,
+		`盯的外部输入：${t.watch.length ? t.watch.join("；") : "（无）"}`,
+		"</task-card>",
+	].join("\n");
+}
+
 // 某个时间点之后任务表里的变化：用户离开后回来时给模型看
 export function since(ts: string): string {
 	const l = readTable();
 	const out: string[] = [];
-	for (const byLine of l.items.values()) for (const i of byLine.values()) if (i.updated > ts) out.push(itemLine(i));
+	for (const byTask of l.items.values()) for (const i of byTask.values()) if (i.updated > ts) out.push(`(${i.line}) ${itemLine(i).slice(2)}`);
 	for (const d of l.decisions) if (d.ts > ts) out.push(decisionLine(d));
 	for (const a of l.actions) if (a.ts > ts) out.push(`- ${describeAction(a)}`);
 	if (!out.length) return "（任务表里没有新记录；外部系统的变化要去查）";
