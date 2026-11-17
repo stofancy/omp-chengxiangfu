@@ -6,7 +6,7 @@
   "license": "MIT",
   "author": "stofancy",
   "keywords": ["omp", "oh-my-pi", "omp-plugin", "agent", "orchestration"],
-  "files": ["src", "prompts", "sources", "deploy", "config.example.json", "README.md", "LICENSE"],
+  "files": ["src", "prompts", "skills", "sources", "deploy", "config.example.json", "README.md", "LICENSE"],
   "omp": {
     "extensions": ["./src/index.ts"]
   }
