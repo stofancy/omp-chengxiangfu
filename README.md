@@ -79,6 +79,8 @@ git add .gitignore && git commit -m "隔离用的外层仓库"
 | `rules.md` | 你自己的补充规则，接在插件规则后面注入 |
 | `config.json` | `rules` 段是规则参数；其余是外部消息源的配置，见 `config.example.json` |
 
+从旧版升级：运行 `bun scripts/migrate-single-tasktable.ts [数据目录]`，把旧的分账本合并成这一本任务表，旧数据移到 `archive/<时间戳>/`。可重复运行，已迁移过就什么都不做；用法见脚本开头的注释。
+
 ## 外部消息
 
 外部消息是 `inbox/new/` 里的一个 JSON 文件，任何程序都能写：
