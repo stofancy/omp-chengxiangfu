@@ -19,7 +19,8 @@ function itemLine(i: Item): string {
 	return `- ${parts.join(" | ")}`;
 }
 
-const taskHead = (t: Task) => `${t.name}${t.title ? ` ${t.title}` : ""} | owner ${t.agent ? `agent://${t.agent}` : "none"} | watching ${t.watch.length}`;
+const reviewWord = (t: Task) => (t.review ? (t.review.verdict === "pass" ? "passed" : "failed") : "none");
+const taskHead = (t: Task) => `${t.name}${t.title ? ` ${t.title}` : ""} | owner ${t.agent ? `agent://${t.agent}` : "none"} | watching ${t.watch.length} | review ${reviewWord(t)}`;
 
 function describeAction(ev: Ev): string {
 	if (ev.kind === "inbox") return `${when(ev.ts)} inbox ${ev.source}: ${ev.who ?? ""} @ ${ev.where ?? ""}`;
@@ -56,6 +57,11 @@ function renderTask(l: Table, t: Task, all: Item[]): string {
 	if (t.name !== GENERAL) {
 		out.push(`- 状态：${t.status || "进行中"}`, `- 负责 agent：${t.agent || "（无）"}`, `- 目标：${t.goal || "（无）"}`, `- 完成判据：${t.doneWhen || "（无）"}`, `- 盯的外部输入：${t.watch.length ? "" : "（无）"}`);
 		out.push(...t.watch.map(w => `  - ${w}`), "");
+		if (t.review) {
+			const r = t.review;
+			out.push(`## 最近一次审查：${r.verdict === "pass" ? "通过" : "不通过"}（${r.by}，${when(r.at)}）`, "", "核对过的：", "", r.evidence || "（没写）", "");
+			if (r.findings) out.push("发现：", "", r.findings, "");
+		}
 	}
 	out.push("## 事项", "", "| # | 事项 | 状态 | 下一步 | 催办 | PR | 来源 |", "|---|---|---|---|---|---|---|");
 	for (const i of all) out.push(`| ${i.id} | ${cell(i.title)} | ${cell(i.status)} | ${cell(i.next)} | ${cell(i.chase)} | ${cell(i.pr)} | ${cell(i.source)} |`);

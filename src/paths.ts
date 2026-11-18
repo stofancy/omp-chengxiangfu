@@ -17,4 +17,5 @@ export const DISPATCH_STATE = join(HOME, "state/dispatch"); // 调度器模式�
 const prompt = (name: string) => fileURLToPath(new URL(`../prompts/${name}`, import.meta.url));
 export const DISPATCH_RULES = prompt("调度规则.md");
 export const OWNER_RULES = prompt("负责人规则.md");
+export const REVIEW_RULES = prompt("审查规则.md");
 export const ORDERS = prompt("常设约束.md");

@@ -1,25 +1,28 @@
 // omp-chengxiangfu：调度器模式。默认关；在会话里敲 /调度 打开，打开状态跟着会话走。关着的会话里，插件什么都不做。
 //
 // 派子代理、给子代理发消息、子代理再派人、续会话后叫醒子代理、看谁在跑，都是 omp 自带的，这里不重做。
-// 插件只补 omp 没有的三样：
+// 插件只补 omp 没有的：
 // - 一本全局的任务表（tasks/events.jsonl）：每个任务登记负责 agent 的名字（主会话用这个名字派出子代理，之后 agent://<名字> 就是它）和要盯的外部输入。
-// - 每次请求末尾附规则（不写进会话历史，压缩丢不掉）：主会话收调度规则、常设约束和任务表摘要；任务的负责 agent 收常设约束、负责 agent 的规矩和任务卡；其他子代理只收常设约束。
+// - 每次请求末尾附规则（不写进会话历史，压缩丢不掉）：主会话收调度规则、常设约束和任务表摘要；任务的负责 agent 收常设约束、负责 agent 的规矩和任务卡；任务的审查者收常设约束、审查规则和任务卡；其他子代理只收常设约束。
 // - 外部消息：会话外的程序写进 inbox/new；每 5 秒认领一次，按任务登记的「要盯的外部输入」归到任务，合成一条消息叫醒主会话，由它交给负责 agent。
-// 远端写入自动记到任务表。不拦截任何操作。
+// - 按层定模型：派出任务的负责 agent 时由程序指定模型（默认跟主会话一样）；它再派的帮手照 omp 自己的配置。
+// - 审查：任务要记成「完成」，任务表里得先有主会话另派的审查者记下的「通过」。
+// 远端写入自动记到任务表。除了上面这一条，不拦截任何操作。
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { DISPATCH_RULES, HOME, INBOX_CLAIMED, INBOX_NEW, ORDERS, OWNER_RULES, USER_RULES } from "./paths";
+import { DISPATCH_RULES, HOME, INBOX_CLAIMED, INBOX_NEW, ORDERS, OWNER_RULES, REVIEW_RULES, USER_RULES } from "./paths";
 import { remoteWrite } from "./remote";
 import { checkReply, feedback, renderRules, settings } from "./rules";
 import { OFF_MESSAGE, isOn, setOn } from "./switch";
-import { type Ev, GENERAL, type Table, agentTaken, append, logError, openTasks, readTable, taskOfAgent, today } from "./table";
+import { type Ev, GENERAL, type Table, agentTaken, append, doneBlocker, isReviewerName, logError, needsReview, openTasks, readTable, taskOfAgent, taskOfReviewer, today } from "./table";
 import { renderViews, since, snapshot, taskCard } from "./views";
 import { matchTask } from "./watch";
 
 const TICK_MS = 5_000;
 const STATUS_KEY = "chengxiangfu";
-const TOOLS = ["tasktable_task", "tasktable_update", "tasktable_ask", "tasktable_correction"];
+const TOOLS = ["tasktable_task", "tasktable_update", "tasktable_ask", "tasktable_correction", "tasktable_review"];
+const TITLE = "调度"; // 打开调度器模式的会话叫这个名字，不让 omp 按第一句话自动起名
 // 一条编号回答：编号 + 可选标点 + 最多 4 个字的回答（「做」「不做」「先不」可以，「点以后再说」不行）
 const ANSWER = /(?<!\d)(\d{1,3})\s*[.、:：)）]?\s*([^\s\d;；,，。.、:：]{1,4})(?=[\s;；,，。.、]|$)/g;
 
@@ -27,6 +30,7 @@ const ANSWER = /(?<!\d)(\d{1,3})\s*[.、:：)）]?\s*([^\s\d;；,，。.、:：]
 interface Ctx {
 	agent?: { kind?: string; id?: string };
 	sessionManager?: { getSessionFile?(): string | undefined };
+	models?: { current?(): { provider?: string; id?: string } | undefined };
 	getAsyncJobSnapshot?(): { running?: Array<{ id: string; label?: string }> } | null;
 	setInterval(fn: () => void | Promise<void>, ms: number): unknown;
 	ui: {
@@ -37,6 +41,7 @@ interface Ctx {
 interface InboxFile { source?: string; who?: string; where?: string; link?: string; line?: string; note?: string; urgent?: boolean }
 interface UpdateParams { task?: string; id: string; title?: string; status?: string; next?: string; chase?: string; pr?: string; source?: string }
 interface AskParams { action: "open" | "close" | "decide"; task?: string; text?: string; n?: number; outcome?: string }
+interface ReviewParams { task: string; verdict: "pass" | "fail"; evidence: string; findings?: string }
 interface TaskParams { task: string; agent?: string; title?: string; goal?: string; done_when?: string; watch_add?: string[]; watch_remove?: string[]; status?: string }
 type Input = Record<string, unknown>;
 
@@ -72,6 +77,7 @@ function route(l: Table, ev: InboxFile): { task?: string; tag: string } {
 }
 
 export default function (pi: ExtensionAPI): void {
+	const naming = pi as unknown as { getSessionName?(): string | undefined; setSessionName?(name: string): Promise<void> | void };
 	const z = pi.zod;
 	let session: string | undefined;
 	let ui: Ctx | undefined;
@@ -162,14 +168,14 @@ export default function (pi: ExtensionAPI): void {
 		showStatus(ctx);
 	};
 
-	// 四个任务表工具只在打开了调度器模式的会话里注册（子代理跟随它所属的主会话）：没打开过的会话里它们不存在。
+	// 任务表工具只在打开了调度器模式的会话里注册（子代理跟随它所属的主会话）：没打开过的会话里它们不存在。
 	// 打开后又关掉：用 omp 自己的工具开关从模型的工具列表里拿掉
 	let registered = false;
 	const syncTools = async (sid = session) => {
 		const want = isOn(sid);
 		if (want && !registered) {
 			registered = true;
-			for (const tool of [taskTool, updateTool, askTool, correctionTool]) pi.registerTool(tool);
+			for (const tool of [taskTool, updateTool, askTool, correctionTool, reviewTool]) pi.registerTool(tool);
 		}
 		if (!registered) return;
 		const api = pi as unknown as { getActiveTools?(): string[]; setActiveTools?(names: string[]): Promise<void> | void };
@@ -213,6 +219,7 @@ export default function (pi: ExtensionAPI): void {
 			const off = /^(off|关|关闭)$/i.test(args.trim());
 			setOn(session, !off);
 			await syncTools().catch(err => logError("tools", err));
+			if (!off) await naming.setSessionName?.(TITLE);
 			showStatus(ctx);
 			ctx.ui.notify(off ? "调度器模式已关闭：这个会话里插件不再做任何事" : "调度器模式已打开：你说的话和外部消息会按任务交给各自的负责 agent", "info");
 		},
@@ -220,6 +227,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("input", async (e: { text?: string }, ctx: Ctx) => {
 		if (!isMain(ctx) || !on(ctx)) return;
+		if (!naming.getSessionName?.()) await naming.setSessionName?.(TITLE); // 会话还没名字：赶在 omp 按第一句话自动起名之前定下来
 		const text = String(e.text ?? "");
 		inboxSinceInput = 0; // 外部事件计数 = 用户上次发话以来到的
 		urgentSinceInput = 0;
@@ -262,11 +270,13 @@ export default function (pi: ExtensionAPI): void {
 			text = `${preface}<chengxiangfu-rules data_dir="${HOME}">\n${rules}${extra ? `\n## 用户补充\n${extra}` : ""}</chengxiangfu-rules>\n${orders}${snapshot(running(ctx))}`;
 			if (notes.length) text += `\n<chengxiangfu-notes>\n${notes.join("\n")}\n</chengxiangfu-notes>`;
 		} else {
-			// 只有任务的负责 agent（一层的子代理，名字登记在任务上）收规矩和任务卡；它派出的帮手只收常设约束
+			// 只有任务的负责 agent 和审查者（一层的子代理，名字对得上任务）收规矩和任务卡；负责 agent 派出的帮手只收常设约束
 			const id = ctx.agent?.id ?? "";
 			const l = readTable();
-			const t = id && !id.includes(".") ? taskOfAgent(l, id) : undefined;
-			if (t) text += `<chengxiangfu-owner-rules>\n${renderRules(read(OWNER_RULES), settings())}</chengxiangfu-owner-rules>\n${taskCard(t)}`;
+			const owned = id && !id.includes(".") ? taskOfAgent(l, id) : undefined;
+			const reviewed = taskOfReviewer(l, id);
+			if (owned) text += `<chengxiangfu-owner-rules>\n${renderRules(read(OWNER_RULES), settings())}</chengxiangfu-owner-rules>\n${taskCard(owned)}`;
+			if (reviewed) text += `<chengxiangfu-review-rules>\n${read(REVIEW_RULES)}</chengxiangfu-review-rules>\n${taskCard(reviewed)}`;
 		}
 		return { messages: [...e.messages, { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }] };
 	});
@@ -279,6 +289,21 @@ export default function (pi: ExtensionAPI): void {
 	});
 	pi.on("agent_end", async (_e: unknown, ctx: Ctx) => {
 		if (isMain(ctx)) userTurn = false;
+	});
+
+	// 按层定模型：主会话派出任务的负责 agent 时，用配置的模型，没配就跟主会话一样（模型和思考档）；派出审查者时跟主会话一样。
+	// 负责 agent 的帮手不管，照 omp 自己的配置
+	pi.on("before_subagent_spawn", async (e: { spawnKey?: string }, ctx: Ctx) => {
+		if (!isMain(ctx) || !on(ctx) || !e.spawnKey) return;
+		const l = readTable();
+		const owner = !!taskOfAgent(l, e.spawnKey);
+		if (!owner && !taskOfReviewer(l, e.spawnKey)) return;
+		const configured = owner ? settings().owner_model : "";
+		if (configured) return { model: configured };
+		const m = ctx.models?.current?.();
+		if (!m?.provider || !m.id) return;
+		const level = (pi as unknown as { getThinkingLevel?(): unknown }).getThinkingLevel?.();
+		return { model: `${m.provider}/${m.id}${typeof level === "string" && level ? `:${level}` : ""}` };
 	});
 
 	// 回复的事后检查：只看主会话给用户的最后一条（不带工具调用的）回复，不拦截
@@ -330,7 +355,7 @@ export default function (pi: ExtensionAPI): void {
 		name: "tasktable_task",
 		label: "Task table task",
 		description:
-			"Create or update a task: its owner agent, goal, completion criteria and the external inputs it watches. Only the fields you pass are changed. A new task needs agent and done_when; after creating it, spawn the owner with the task tool using exactly that agent name, so agent://<name> is this task's owner. External events matching a watched link (Slack thread or channel, PR, ticket key) are routed to this task. Set status to 完成 to close it.",
+			"Create or update a task: its owner agent, goal, completion criteria and the external inputs it watches. Only the fields you pass are changed. A new task needs agent and done_when; after creating it, spawn the owner with the task tool using exactly that agent name, so agent://<name> is this task's owner. External events matching a watched link (Slack thread or channel, PR, ticket key) are routed to this task. Set status to 完成 to close it; that is refused until a reviewer has recorded a passing review with tasktable_review. 取消 closes it without a review.",
 		parameters: z.object({
 			task: z.string().describe("Task name, e.g. a ticket key like PROJ-123 or a short name."),
 			agent: z.string().optional().describe("Owner agent name, CamelCase ASCII (e.g. Proj123); unique among open tasks."),
@@ -348,9 +373,14 @@ export default function (pi: ExtensionAPI): void {
 			const l = readTable();
 			const agent = p.agent?.trim();
 			if (agent && agentTaken(l, agent, task)) throw new Error(`owner agent name ${agent} is already used by another open task`);
+			if (agent && isReviewerName(agent)) throw new Error(`owner agent name ${agent} looks like a reviewer name (ends in Review); pick another`);
 			const isNew = !l.tasks.get(task)?.recorded;
 			if (isNew && !agent) throw new Error("a new task needs agent");
 			if (isNew && !p.done_when?.trim()) throw new Error("a new task needs done_when");
+			if (p.status && needsReview(p.status)) {
+				const blocker = doneBlocker(l.tasks.get(task), task, agent, p.done_when);
+				if (blocker) throw new Error(blocker);
+			}
 			const { task: _task, agent: _agent, ...rest } = p;
 			const fields = Object.fromEntries(Object.entries({ ...rest, agent }).filter(([, v]) => (Array.isArray(v) ? v.length : typeof v === "string")));
 			if (!Object.keys(fields).length) throw new Error("nothing to change");
@@ -438,6 +468,29 @@ export default function (pi: ExtensionAPI): void {
 			const n = readTable().lastCorrection + 1;
 			record({ sid: s, kind: "correction", line, n, text: p.text });
 			return { content: [{ type: "text", text: `correction number ${n}` }] };
+		},
+	};
+
+	const reviewTool = {
+		name: "tasktable_review",
+		label: "Task table review",
+		description:
+			"Record the verdict of an independent review of a task's result. Only the reviewer the main session spawned for that task (a subagent named <owner agent>Review) can call it; the owner, its helpers and the main session cannot. A task can be closed as 完成 only while its latest review is pass.",
+		parameters: z.object({
+			task: z.string().describe("Task name, as on the task card."),
+			verdict: z.enum(["pass", "fail"]).describe("pass only if every completion criterion checked out and you found nothing that breaks the goal."),
+			evidence: z.string().describe("One line per completion criterion: the criterion, the command you ran or the artifact you opened, and what it actually showed."),
+			findings: z.string().optional().describe("Required for fail. Each finding: command, actual output, what the goal requires. Only things you ran."),
+		}),
+		async execute(_id: string, p: ReviewParams, _signal: unknown, _onUpdate: unknown, ctx: Ctx) {
+			const s = sidOf(ctx);
+			const id = ctx.agent?.id ?? "";
+			const t = ctx.agent?.kind === "sub" ? taskOfReviewer(readTable(), id) : undefined;
+			if (!t || t.name !== p.task.trim()) throw new Error(`only the reviewer spawned by the main session for ${p.task} (a subagent named <owner agent>Review) can record its review`);
+			if (!p.evidence.trim()) throw new Error("evidence is required");
+			if (p.verdict === "fail" && !p.findings?.trim()) throw new Error("a fail verdict needs findings");
+			record({ sid: s, kind: "review", line: t.name, verdict: p.verdict, evidence: p.evidence, findings: p.findings ?? "", by: id });
+			return { content: [{ type: "text", text: `recorded ${p.verdict} for ${t.name}` }] };
 		},
 	};
 }
