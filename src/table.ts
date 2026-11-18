@@ -7,9 +7,9 @@ import { ERRLOG, TASKS } from "./paths";
 export const GENERAL = "日常"; // 不属于任何任务的事
 
 export type Ev = { ts: string; sid: string; kind: string; line?: string; [k: string]: unknown };
-export interface Item { line: string; id: string; title: string; status: string; next?: string; chase?: string; pr?: string; source?: string; updated: string }
-export interface Ask { n: number; line: string; text: string; opened: string }
 export interface Review { verdict: "pass" | "fail"; by: string; at: string; evidence: string; findings: string }
+export interface Item { line: string; id: string; title: string; status: string; next?: string; chase?: string; pr?: string; source?: string; updated: string; review?: Review }
+export interface Ask { n: number; line: string; text: string; opened: string }
 export interface Task {
 	name: string;
 	recorded: boolean; // 有 task 事件；false = 只有事项的旧任务
@@ -20,6 +20,7 @@ export interface Task {
 	status: string; // 空 = 进行中
 	watch: string[]; // 要盯的外部输入：链接或标识
 	review?: Review; // 最近一次审查的结论：没有通过的审查，任务记不成「完成」
+	reopened?: boolean; // 记成完成之后又打开过：再完成要整个任务重新审，事项各自审过不算
 }
 export interface Table {
 	tasks: Map<string, Task>;
@@ -85,30 +86,35 @@ function fold(l: Table, ev: Ev): void {
 				const v = ev[key];
 				if (typeof v === "string") t[field] = v;
 			}
-			if (wasDone && !isDone(t.status)) t.review = undefined; // 重新打开的任务：之前的审查不算数，再完成要重新审
+			if (wasDone && !isDone(t.status)) {
+				t.review = undefined; // 重新打开的任务：之前的审查不算数，再完成要重新审
+				t.reopened = true;
+			}
 			const removed = new Set(strings(ev.watch_remove));
 			t.watch = [...new Set([...t.watch, ...strings(ev.watch_add)])].filter(w => !removed.has(w));
 			break;
 		}
-		case "review":
-			taskOf(l, line).review = {
-				verdict: ev.verdict === "pass" ? "pass" : "fail",
-				by: String(ev.by ?? ""),
-				at: ev.ts,
-				evidence: String(ev.evidence ?? ""),
-				findings: String(ev.findings ?? ""),
-			};
+		case "review": {
+			// 带事项号的是这个事项的审查，不带的是整个任务的审查
+			const review: Review = { verdict: ev.verdict === "pass" ? "pass" : "fail", by: String(ev.by ?? ""), at: ev.ts, evidence: String(ev.evidence ?? ""), findings: String(ev.findings ?? "") };
+			if (typeof ev.item === "string" && ev.item) {
+				const item = l.items.get(line)?.get(ev.item);
+				if (item) item.review = review;
+			} else taskOf(l, line).review = review;
 			break;
+		}
 		case "item": {
 			const id = String(ev.id);
 			taskOf(l, line);
 			let byTask = l.items.get(line);
 			if (!byTask) l.items.set(line, (byTask = new Map()));
 			const next: Item = { ...(byTask.get(id) ?? { line, id, title: id, status: "" }), updated: ev.ts };
+			const wasDone = isDone(next.status);
 			for (const f of ["title", "status", "next", "chase", "pr", "source"] as const) {
 				const v = ev[f];
 				if (typeof v === "string") next[f] = v;
 			}
+			if (wasDone && !isDone(next.status)) next.review = undefined; // 重新打开的事项：之前的审查不算数
 			byTask.set(id, next);
 			break;
 		}
@@ -192,12 +198,27 @@ export function taskOfReviewer(l: Table, id: string): Task | undefined {
 	return owner ? taskOfAgent(l, owner) : undefined;
 }
 
-// 任务现在能不能记成完成：不能时返回原因（给模型看，英文）。agent、doneWhen 是这次调用里一并传的
-export function doneBlocker(t: Task | undefined, name: string, agent?: string, doneWhen?: string): string | undefined {
+const latest = (r?: Review) => (r ? `${r.verdict} by ${r.by}` : "none");
+
+// 任务现在能不能记成完成：不能时返回原因（给模型看，英文）。agent、doneWhen 是这次调用里一并传的。
+// 两条路：整个任务有通过的审查；或者（没重新打开过的任务）事项都已关闭，其中记成完成的每一项都有自己通过的审查
+export function doneBlocker(l: Table, name: string, agent?: string, doneWhen?: string): string | undefined {
+	const t = l.tasks.get(name);
 	const owner = agent || t?.agent;
 	if (!owner || !(doneWhen?.trim() || t?.doneWhen)) return `${name} has no owner agent or no done_when; register both before closing it as 完成, or close it as 取消`;
 	if (t?.review?.verdict === "pass") return undefined;
-	return `${name} has no passing review (latest: ${t?.review ? `${t.review.verdict} by ${t.review.by}` : "none"}). Spawn a reviewer with the task tool, name="${owner}Review" (add a number for a re-review, e.g. ${owner}Review2), and give it only where the result is. It records its verdict with tasktable_review.`;
+	const items = [...(l.items.get(name)?.values() ?? [])];
+	const finished = items.filter(i => needsReview(i.status)); // 取消的不算
+	if (!t?.reopened && finished.length && items.every(i => isDone(i.status)) && finished.every(i => i.review?.verdict === "pass")) return undefined;
+	return `${name} has no passing review of the task as a whole (latest: ${latest(t?.review)}), and its items are not all closed with a passing review each${t?.reopened ? " (a reopened task needs a new review of the task as a whole)" : ""}. Spawn a reviewer with the task tool, name="${owner}Review" (add a number for a re-review, e.g. ${owner}Review2), and give it only where the result is. It records its verdict with tasktable_review.`;
+}
+
+// 事项现在能不能记成完成：不能时返回原因。只管有负责 agent 的任务；已经是完成的事项再改别的字段不拦（取消过的再记完成照样要审）
+export function itemDoneBlocker(l: Table, name: string, id: string): string | undefined {
+	const owner = l.tasks.get(name)?.agent;
+	const item = l.items.get(name)?.get(id);
+	if (name === GENERAL || !owner || (item && needsReview(item.status)) || item?.review?.verdict === "pass") return undefined;
+	return `${name}/${id} has no passing review (latest: ${latest(item?.review)}). The owner sets its status to 待审查 and hands it back to the main session as 做完 with the evidence; the main session spawns a reviewer named "${owner}Review" (add a number for a re-review), which records its verdict with tasktable_review item="${id}". An item that is dropped is closed as 取消 without a review.`;
 }
 
 // 负责 agent 的名字在未完成的任务里不能重复：程序靠名字把子代理对到任务

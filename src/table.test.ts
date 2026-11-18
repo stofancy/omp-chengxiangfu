@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { agentTaken, doneBlocker, foldEvents, isReviewerName, needsReview, openTasks, taskOfAgent, taskOfReviewer } from "./table";
+import { agentTaken, doneBlocker, foldEvents, isReviewerName, itemDoneBlocker, needsReview, openTasks, taskOfAgent, taskOfReviewer } from "./table";
 
 let n = 0;
 const ev = (kind: string, line: string, extra: Record<string, unknown> = {}) => JSON.stringify({ ts: new Date(Date.UTC(2026, 10, 18, 0, 0, n++)).toISOString(), sid: "s", kind, line, ...extra });
@@ -68,9 +68,10 @@ test("记成完成之前：没登记负责 agent 或判据的不行；没审查�
 	const base = ev("task", "A", { agent: "TaskA", done_when: "x" });
 	const pass = ev("review", "A", { verdict: "pass", by: "TaskAReview", evidence: "e" });
 	const fail = ev("review", "A", { verdict: "fail", by: "TaskAReview2", evidence: "e", findings: "f" });
-	const blocker = (events: string[], name = "A") => doneBlocker(foldEvents(events).tasks.get(name), name);
+	const blocker = (events: string[], name = "A") => doneBlocker(foldEvents(events), name);
 	expect(blocker([ev("item", "OLD", { id: "T1", status: "进行中" })], "OLD")).toContain("no owner agent or no done_when");
-	expect(blocker([base])).toContain('no passing review (latest: none). Spawn a reviewer with the task tool, name="TaskAReview"');
+	expect(blocker([base])).toContain('no passing review of the task as a whole (latest: none)');
+	expect(blocker([base])).toContain('name="TaskAReview"');
 	expect(blocker([base, pass, fail])).toContain("latest: fail by TaskAReview2");
 	expect(blocker([base, fail, pass])).toBeUndefined();
 });
@@ -82,7 +83,56 @@ test("重新打开的任务：之前的通过不算数，再完成要重新审",
 		ev("task", "A", { status: "完成" }),
 		ev("task", "A", { status: "进行中" }),
 	]);
-	expect(doneBlocker(l.tasks.get("A"), "A")).toContain("no passing review (latest: none)");
+	expect(doneBlocker(l, "A")).toContain("latest: none");
+});
+
+test("事项记成完成之前：要有这个事项自己通过的审查；日常、没有负责 agent 的任务、已经关闭的事项不拦", () => {
+	const base = [ev("task", "A", { agent: "TaskA", done_when: "x" }), ev("item", "A", { id: "T1", status: "待审查" }), ev("item", "A", { id: "T2", status: "进行中" })];
+	const passT1 = ev("review", "A", { item: "T1", verdict: "pass", by: "TaskAReview", evidence: "e" });
+	expect(itemDoneBlocker(foldEvents(base), "A", "T1")).toContain('A/T1 has no passing review (latest: none)');
+	expect(itemDoneBlocker(foldEvents(base), "A", "T9")).toContain("A/T9 has no passing review"); // 还没建的事项直接记完成也拦
+	const l = foldEvents([...base, passT1]);
+	expect(itemDoneBlocker(l, "A", "T1")).toBeUndefined();
+	expect(itemDoneBlocker(l, "A", "T2")).toContain("A/T2 has no passing review"); // T1 的审查不算 T2 的
+	expect(l.tasks.get("A")?.review).toBeUndefined(); // 事项的审查不算整个任务的
+	expect(itemDoneBlocker(foldEvents([...base, passT1, ev("review", "A", { item: "T1", verdict: "fail", by: "TaskAReview2", evidence: "e", findings: "f" })]), "A", "T1")).toContain("latest: fail by TaskAReview2");
+	expect(itemDoneBlocker(foldEvents([ev("item", "日常", { id: "T1" })]), "日常", "T1")).toBeUndefined();
+	expect(itemDoneBlocker(foldEvents([ev("item", "OLD", { id: "T1" })]), "OLD", "T1")).toBeUndefined();
+	// 已经是完成的事项再改别的字段不拦；取消过的再记完成照样要审
+	expect(itemDoneBlocker(foldEvents([...base, passT1, ev("item", "A", { id: "T1", status: "完成" })]), "A", "T1")).toBeUndefined();
+	expect(itemDoneBlocker(foldEvents([...base, ev("item", "A", { id: "T2", status: "取消" })]), "A", "T2")).toContain("A/T2 has no passing review");
+});
+
+test("重新打开的事项：之前的通过不算数", () => {
+	const l = foldEvents([
+		ev("task", "A", { agent: "TaskA", done_when: "x" }),
+		ev("item", "A", { id: "T1", status: "待审查" }),
+		ev("review", "A", { item: "T1", verdict: "pass", by: "TaskAReview", evidence: "e" }),
+		ev("item", "A", { id: "T1", status: "完成" }),
+		ev("item", "A", { id: "T1", status: "进行中" }),
+	]);
+	expect(itemDoneBlocker(l, "A", "T1")).toContain("latest: none");
+});
+
+test("任务下的事项都关闭了、完成的过了审查：任务可以直接记完成；还有没关闭的事项就要整个任务的审查", () => {
+	const events = [
+		ev("task", "A", { agent: "TaskA", done_when: "x" }),
+		ev("item", "A", { id: "T1", status: "待审查" }),
+		ev("item", "A", { id: "T2", status: "进行中" }),
+		ev("review", "A", { item: "T1", verdict: "pass", by: "TaskAReview", evidence: "e" }),
+		ev("item", "A", { id: "T1", status: "完成" }),
+	];
+	expect(doneBlocker(foldEvents(events), "A")).toContain("its items are not all closed with a passing review each");
+	const closed = [...events, ev("item", "A", { id: "T2", status: "取消" })];
+	expect(doneBlocker(foldEvents(closed), "A")).toBeUndefined();
+	// 全是取消的、没有一项审过：不算
+	expect(doneBlocker(foldEvents([ev("task", "B", { agent: "TaskB", done_when: "x" }), ev("item", "B", { id: "T1", status: "取消" })]), "B")).toContain("no passing review");
+	// 有一项是完成但没审过（这道关卡之前记的）：不算
+	expect(doneBlocker(foldEvents([ev("task", "C", { agent: "TaskC", done_when: "x" }), ev("item", "C", { id: "T0", status: "完成" }), ev("item", "C", { id: "T1", status: "待审查" }), ev("review", "C", { item: "T1", verdict: "pass", by: "TaskCReview", evidence: "e" }), ev("item", "C", { id: "T1", status: "完成" })]), "C")).toContain("no passing review");
+	// 任务记完成后又打开：事项各自审过不算，要整个任务重新审
+	const reopened = [...closed, ev("task", "A", { status: "完成" }), ev("task", "A", { status: "进行中" })];
+	expect(doneBlocker(foldEvents(reopened), "A")).toContain("a reopened task needs a new review of the task as a whole");
+	expect(doneBlocker(foldEvents([...reopened, ev("review", "A", { verdict: "pass", by: "TaskAReview2", evidence: "e" })]), "A")).toBeUndefined();
 });
 
 test("哪些状态要先有通过的审查：完成类的要，取消和进行中的不用", () => {

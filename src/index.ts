@@ -6,8 +6,9 @@
 // - 每次请求末尾附规则（不写进会话历史，压缩丢不掉）：主会话收调度规则、常设约束和任务表摘要；任务的负责 agent 收常设约束、负责 agent 的规矩和任务卡；任务的审查者收常设约束、审查规则和任务卡；其他子代理只收常设约束。
 // - 外部消息：会话外的程序写进 inbox/new；每 5 秒认领一次，按任务登记的「要盯的外部输入」归到任务，合成一条消息叫醒主会话，由它交给负责 agent。
 // - 按层定模型：派出任务的负责 agent 时由程序指定模型（默认跟主会话一样）；它再派的帮手照 omp 自己的配置。
-// - 审查：任务要记成「完成」，任务表里得先有主会话另派的审查者记下的「通过」。
-// 远端写入自动记到任务表。除了上面这一条，不拦截任何操作。
+// - 审查：事项和任务要记成「完成」，任务表里得先有主会话另派的审查者记下的「通过」。
+// - 提问：登记提问时要写查过哪里，程序把这个任务已有的决定列给模型看。
+// 远端写入自动记到任务表，并配上它之前用户最近的一条决定。除了审查那一条，不拦截任何操作。
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -15,8 +16,8 @@ import { DISPATCH_RULES, HOME, INBOX_CLAIMED, INBOX_NEW, ORDERS, OWNER_RULES, RE
 import { remoteWrite } from "./remote";
 import { checkReply, feedback, renderRules, settings } from "./rules";
 import { OFF_MESSAGE, isOn, setOn } from "./switch";
-import { type Ev, GENERAL, type Table, agentTaken, append, doneBlocker, isReviewerName, logError, needsReview, openTasks, readTable, taskOfAgent, taskOfReviewer, today } from "./table";
-import { renderViews, since, snapshot, taskCard } from "./views";
+import { type Ev, GENERAL, type Table, agentTaken, append, doneBlocker, isReviewerName, itemDoneBlocker, logError, needsReview, openTasks, readTable, taskOfAgent, taskOfReviewer, today } from "./table";
+import { decidedFor, renderViews, since, snapshot, taskCard } from "./views";
 import { matchTask } from "./watch";
 
 const TICK_MS = 5_000;
@@ -31,6 +32,7 @@ interface Ctx {
 	agent?: { kind?: string; id?: string };
 	sessionManager?: { getSessionFile?(): string | undefined };
 	models?: { current?(): { provider?: string; id?: string } | undefined };
+	getSystemPrompt?(): string | string[] | undefined;
 	getAsyncJobSnapshot?(): { running?: Array<{ id: string; label?: string }> } | null;
 	setInterval(fn: () => void | Promise<void>, ms: number): unknown;
 	ui: {
@@ -40,8 +42,8 @@ interface Ctx {
 }
 interface InboxFile { source?: string; who?: string; where?: string; link?: string; line?: string; note?: string; urgent?: boolean }
 interface UpdateParams { task?: string; id: string; title?: string; status?: string; next?: string; chase?: string; pr?: string; source?: string }
-interface AskParams { action: "open" | "close" | "decide"; task?: string; text?: string; n?: number; outcome?: string }
-interface ReviewParams { task: string; verdict: "pass" | "fail"; evidence: string; findings?: string }
+interface AskParams { action: "open" | "close" | "decide"; task?: string; text?: string; checked?: string; n?: number; outcome?: string }
+interface ReviewParams { task: string; item?: string; verdict: "pass" | "fail"; evidence: string; findings?: string }
 interface TaskParams { task: string; agent?: string; title?: string; goal?: string; done_when?: string; watch_add?: string[]; watch_remove?: string[]; status?: string }
 type Input = Record<string, unknown>;
 
@@ -256,18 +258,32 @@ export default function (pi: ExtensionAPI): void {
 		}
 	});
 
+	// 不常变的规则正文（调度规则、常设约束）。用户每次发话时放进系统提示词（见 before_agent_start），那里进缓存；
+	// 系统提示词里没有的那些请求（还没发过话就被外部消息叫醒、规则文件刚改过）照旧附在末尾
+	const stableRules = () => `<chengxiangfu-rules data_dir="${HOME}">\n${renderRules(read(DISPATCH_RULES), settings())}</chengxiangfu-rules>\n<chengxiangfu-orders data_dir="${HOME}">\n${read(ORDERS)}</chengxiangfu-orders>\n`;
+	const inSystemPrompt = (ctx: Ctx, text: string) => {
+		const system = ctx.getSystemPrompt?.();
+		return (Array.isArray(system) ? system : [system]).some(s => typeof s === "string" && s.includes(text));
+	};
+
 	// 规则文件每次现读：改了立即生效，也不怕压缩
 	pi.on("context", async (e: { messages: unknown[] }, ctx: Ctx) => {
-		if (!on(ctx)) return;
+		if (!on(ctx)) {
+			// 刚关掉、用户还没再发话：上一次发话时接进系统提示词的规则还在，告诉模型不用管
+			if (!isMain(ctx) || !inSystemPrompt(ctx, "<chengxiangfu-rules")) return;
+			const off = "[chengxiangfu plugin] Dispatcher mode was turned off. Ignore <chengxiangfu-rules> and <chengxiangfu-orders> in the system prompt; the tasktable tools are gone.";
+			return { messages: [...e.messages, { role: "user", content: [{ type: "text", text: off }], timestamp: Date.now() }] };
+		}
 		// 注入的是 user 角色，模型容易当成用户贴来的：开头说明来源
 		const preface = "[Injected by the chengxiangfu plugin on every request. Standing instructions, not a message from the operator; never say the operator pasted or sent them.]\n";
 		const orders = `<chengxiangfu-orders data_dir="${HOME}">\n${read(ORDERS)}</chengxiangfu-orders>\n`;
 		let text = preface + orders;
 		if (isMain(ctx)) {
-			const extra = read(USER_RULES);
-			const rules = renderRules(read(DISPATCH_RULES), settings());
+			const stable = stableRules();
+			const cached = inSystemPrompt(ctx, stable);
+			const extra = read(USER_RULES); // 用户的补充规则常改（每次纠正后），留在末尾，不拖着整段缓存重写
 			const notes = [replyNote, awayDelivered ? awayNote : undefined].filter(Boolean);
-			text = `${preface}<chengxiangfu-rules data_dir="${HOME}">\n${rules}${extra ? `\n## 用户补充\n${extra}` : ""}</chengxiangfu-rules>\n${orders}${snapshot(running(ctx))}`;
+			text = `${preface}${cached ? "" : stable}${extra ? `<chengxiangfu-user-rules>\n${extra}</chengxiangfu-user-rules>\n` : ""}${snapshot(running(ctx))}`;
 			if (notes.length) text += `\n<chengxiangfu-notes>\n${notes.join("\n")}\n</chengxiangfu-notes>`;
 		} else {
 			// 只有任务的负责 agent 和审查者（一层的子代理，名字对得上任务）收规矩和任务卡；负责 agent 派出的帮手只收常设约束
@@ -281,11 +297,15 @@ export default function (pi: ExtensionAPI): void {
 		return { messages: [...e.messages, { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }] };
 	});
 
+	// 用户发话时：把规则正文接到系统提示词后面（一直管到下一次发话，中间被子代理交回叫醒的回合也在）。
 	// 离开提示跟着用户那条消息走：消息真正开始处理时才算交付（正在跑的那一轮结束时不清掉它）
-	pi.on("before_agent_start", async (e: { reason?: string }, ctx: Ctx) => {
+	pi.on("before_agent_start", async (e: { reason?: string; systemPrompt?: string | string[] }, ctx: Ctx) => {
 		if (!isMain(ctx) || e.reason !== "prompt" || !on(ctx)) return;
 		userTurn = true;
 		if (awayNote) awayDelivered = true;
+		const stable = stableRules();
+		if (Array.isArray(e.systemPrompt)) return { systemPrompt: [...e.systemPrompt, stable] };
+		if (typeof e.systemPrompt === "string") return { systemPrompt: `${e.systemPrompt}\n${stable}` };
 	});
 	pi.on("agent_end", async (_e: unknown, ctx: Ctx) => {
 		if (isMain(ctx)) userTurn = false;
@@ -317,7 +337,9 @@ export default function (pi: ExtensionAPI): void {
 		const ids = new Set<string>(); // 负责 agent 的名字不算：规则要求提到它时说清它在做哪个任务
 		for (const byTask of l.items.values()) for (const i of byTask.values()) ids.add(i.id);
 		const result = checkReply(text, ids);
-		replyNote = feedback(result, awayDelivered ? undefined : settings().report_lines); // 离开后的那一屏不算超长
+		const rule = settings();
+		// 离开后的那一屏不算超长；不是用户发话引起的回合（子代理交回、外部消息）上限更低
+		replyNote = feedback(result, awayDelivered ? undefined : userTurn ? rule.report_lines : rule.wake_lines, !userTurn);
 		if (awayDelivered) {
 			awayNote = undefined;
 			awayDelivered = false;
@@ -378,7 +400,7 @@ export default function (pi: ExtensionAPI): void {
 			if (isNew && !agent) throw new Error("a new task needs agent");
 			if (isNew && !p.done_when?.trim()) throw new Error("a new task needs done_when");
 			if (p.status && needsReview(p.status)) {
-				const blocker = doneBlocker(l.tasks.get(task), task, agent, p.done_when);
+				const blocker = doneBlocker(l, task, agent, p.done_when);
 				if (blocker) throw new Error(blocker);
 			}
 			const { task: _task, agent: _agent, ...rest } = p;
@@ -406,6 +428,10 @@ export default function (pi: ExtensionAPI): void {
 		async execute(_id: string, p: UpdateParams, _signal: unknown, _onUpdate: unknown, ctx: Ctx) {
 			const s = sidOf(ctx);
 			const line = taskOr(p.task);
+			if (p.status && needsReview(p.status)) {
+				const blocker = itemDoneBlocker(readTable(), line, p.id);
+				if (blocker) throw new Error(blocker);
+			}
 			const { task: _task, ...fields } = p;
 			record({ sid: s, kind: "item", line, ...fields });
 			return { content: [{ type: "text", text: `recorded ${line}/${p.id}` }] };
@@ -416,17 +442,19 @@ export default function (pi: ExtensionAPI): void {
 		name: "tasktable_ask",
 		label: "Task table ask",
 		description:
-			"Questions and decisions for the operator. action=open registers a question and returns its number (use that number when asking). action=close closes a question that became moot. action=decide records a decision the operator stated in prose; pass n when it answers an open question, which also closes it. Replies made only of numbered answers like '1 做 2 不做' are recorded automatically; do not record them again.",
+			"Questions and decisions for the operator. action=open registers a question and returns its number (use that number when asking); it needs checked, and returns what is already decided for that task so you can withdraw a question that is already answered. action=close closes a question that became moot. action=decide records a decision the operator stated in prose; pass n when it answers an open question, which also closes it. Replies made only of numbered answers like '1 做 2 不做' are recorded automatically; do not record them again.",
 		parameters: z.object({
 			action: z.enum(["open", "close", "decide"]),
 			task: z.string().optional().describe(`Task name; defaults to ${GENERAL}.`),
 			text: z.string().optional().describe("open: the question, answerable in 1-2 words. decide: the decision in the operator's terms."),
+			checked: z.string().optional().describe("open: where you looked for an existing answer before asking (task table decisions, session records, the owner's material) and what you found there."),
 			n: z.number().optional().describe("close: question number. decide: the question this decision answers, if any."),
 			outcome: z.string().optional().describe("close: answer or why it is moot."),
 		}),
 		async execute(_id: string, p: AskParams, _signal: unknown, _onUpdate: unknown, ctx: Ctx) {
 			const s = sidOf(ctx);
-			const line = taskOr(p.task);
+			// 关闭、回答一个已登记的提问时没写任务：算在那个提问的任务上，不落到「日常」
+			const line = p.task?.trim() || (p.n === undefined ? undefined : readTable().asks.get(p.n)?.line) || GENERAL;
 			if (p.action === "close") {
 				if (p.n === undefined || !readTable().asks.has(p.n)) throw new Error(`no open question ${p.n}`);
 				record({ sid: s, kind: "ask_close", line, n: p.n, outcome: p.outcome ?? "", by: "model" });
@@ -434,9 +462,12 @@ export default function (pi: ExtensionAPI): void {
 			}
 			if (!p.text) throw new Error("text is required");
 			if (p.action === "open") {
-				const n = readTable().lastAsk + 1;
-				record({ sid: s, kind: "ask", line, n, text: p.text });
-				return { content: [{ type: "text", text: `question number ${n}` }] };
+				const before = readTable();
+				if (!p.checked?.trim()) throw new Error(`checked is required: say where you looked for an existing answer and what you found.\n${decidedFor(before, line, 0)}`);
+				const n = before.lastAsk + 1;
+				record({ sid: s, kind: "ask", line, n, text: p.text, checked: p.checked });
+				const decided = decidedFor(readTable(), line, n);
+				return { content: [{ type: "text", text: `question number ${n}${decided ? `\n${decided}\nIf one of these already answers it, close ${n} now (action=close) instead of asking.` : ""}` }] };
 			}
 			record({ sid: s, kind: "decision", line, date: today(), text: p.text, ...(p.n === undefined ? {} : { n: p.n }) });
 			if (p.n !== undefined && readTable().asks.has(p.n)) record({ sid: s, kind: "ask_close", line, n: p.n, outcome: p.text, by: "operator" });
@@ -475,22 +506,26 @@ export default function (pi: ExtensionAPI): void {
 		name: "tasktable_review",
 		label: "Task table review",
 		description:
-			"Record the verdict of an independent review of a task's result. Only the reviewer the main session spawned for that task (a subagent named <owner agent>Review) can call it; the owner, its helpers and the main session cannot. A task can be closed as 完成 only while its latest review is pass.",
+			"Record the verdict of an independent review: of one item's result (pass item) or of the task as a whole (omit item). Only the reviewer the main session spawned for that task (a subagent named <owner agent>Review) can call it; the owner, its helpers and the main session cannot. An item or a task can be closed as 完成 only while its latest review is pass.",
 		parameters: z.object({
 			task: z.string().describe("Task name, as on the task card."),
-			verdict: z.enum(["pass", "fail"]).describe("pass only if every completion criterion checked out and you found nothing that breaks the goal."),
-			evidence: z.string().describe("One line per completion criterion: the criterion, the command you ran or the artifact you opened, and what it actually showed."),
+			item: z.string().optional().describe("Item id inside the task (e.g. T6) when you reviewed one item's result; omit when you reviewed the task against its completion criteria."),
+			verdict: z.enum(["pass", "fail"]).describe("pass only if everything you were asked to check held up and you found nothing that breaks the goal."),
+			evidence: z.string().describe("One line per thing checked: what it is, the command you ran or the artifact you opened, and what it actually showed."),
 			findings: z.string().optional().describe("Required for fail. Each finding: command, actual output, what the goal requires. Only things you ran."),
 		}),
 		async execute(_id: string, p: ReviewParams, _signal: unknown, _onUpdate: unknown, ctx: Ctx) {
 			const s = sidOf(ctx);
 			const id = ctx.agent?.id ?? "";
-			const t = ctx.agent?.kind === "sub" ? taskOfReviewer(readTable(), id) : undefined;
+			const l = readTable();
+			const t = ctx.agent?.kind === "sub" ? taskOfReviewer(l, id) : undefined;
 			if (!t || t.name !== p.task.trim()) throw new Error(`only the reviewer spawned by the main session for ${p.task} (a subagent named <owner agent>Review) can record its review`);
+			const item = p.item?.trim();
+			if (item && !l.items.get(t.name)?.has(item)) throw new Error(`${t.name} has no item ${item}; items: ${[...(l.items.get(t.name)?.keys() ?? [])].join(", ") || "none"}`);
 			if (!p.evidence.trim()) throw new Error("evidence is required");
 			if (p.verdict === "fail" && !p.findings?.trim()) throw new Error("a fail verdict needs findings");
-			record({ sid: s, kind: "review", line: t.name, verdict: p.verdict, evidence: p.evidence, findings: p.findings ?? "", by: id });
-			return { content: [{ type: "text", text: `recorded ${p.verdict} for ${t.name}` }] };
+			record({ sid: s, kind: "review", line: t.name, ...(item ? { item } : {}), verdict: p.verdict, evidence: p.evidence, findings: p.findings ?? "", by: id });
+			return { content: [{ type: "text", text: `recorded ${p.verdict} for ${t.name}${item ? `/${item}` : ""}` }] };
 		},
 	};
 }

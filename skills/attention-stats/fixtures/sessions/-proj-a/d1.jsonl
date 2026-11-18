@@ -1,0 +1,11 @@
+{"type": "session", "version": 3, "id": "d1", "timestamp": "2026-12-01T08:59:00Z", "cwd": "/x"}
+{"type": "message", "timestamp": "2026-12-01T09:00:00Z", "message": {"role": "user", "content": [{"type": "text", "text": "1 做"}], "attribution": "user"}}
+{"type": "message", "timestamp": "2026-12-01T09:00:20Z", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "c1", "name": "write", "arguments": {"path": "agent://Proj1", "content": "用户说做"}}]}}
+{"type": "message", "timestamp": "2026-12-01T09:00:21Z", "message": {"role": "toolResult", "toolCallId": "c1", "content": [{"type": "text", "text": "sent"}]}}
+{"type": "message", "timestamp": "2026-12-01T09:00:30Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "已交给负责人"}]}}
+{"type": "custom_message", "customType": "async-result", "timestamp": "2026-12-01T09:02:00Z", "content": "子代理交回"}
+{"type": "message", "timestamp": "2026-12-01T09:02:10Z", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "c2", "name": "write", "arguments": {"path": "agent://Other7", "content": "顺便告诉你"}}]}}
+{"type": "message", "timestamp": "2026-12-01T09:02:20Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "子代理交回了进展"}]}}
+{"type": "message", "timestamp": "2026-12-01T09:10:00Z", "message": {"role": "user", "content": [{"type": "text", "text": "这个为什么这么慢"}], "attribution": "user"}}
+{"type": "message", "timestamp": "2026-12-01T09:10:30Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "因为在等别人"}]}}
+{"type": "message", "timestamp": "2026-12-01T09:20:00Z", "message": {"role": "user", "content": [{"type": "text", "text": "好的"}], "attribution": "user"}}

@@ -1,6 +1,7 @@
 """定时检查（建议每 30 分钟）：提醒文件里到期、未完成的条目，每天写一次紧急的外部消息。
 
-提醒文件是 JSON 数组，每项 {"id", "text", "due": "YYYY-MM-DD", "done": bool, "until"?: ISO 时间}；
+提醒文件是 JSON 数组，每项 {"id", "text", "due", "done": bool, "until"?: ISO 时间}；
+due 是 "YYYY-MM-DD"（当天第一次检查就提醒）或带时刻的 "YYYY-MM-DD HH:MM"（本机时间，到点后的第一次检查提醒）。
 路径和归属的线在 config.json 的 reminders.file / reminders.line。
 """
 import json
@@ -15,13 +16,23 @@ SPEC = CONFIG["reminders"]
 FILE = Path(SPEC["file"]).expanduser()
 
 
+def not_due(due, now):
+    """还没到提醒的时候。带时刻的按时刻比，只有日期的（或时刻写得不合法的）按日期比。"""
+    if len(due) > 10:
+        try:
+            return datetime.fromisoformat(due.replace(" ", "T")).astimezone() > now  # 不带时区的按本地时间
+        except ValueError:
+            pass
+    return due[:10] > now.date().isoformat()
+
+
 def main():
     sent = load_state("reminders.json", {})
     today = date.today().isoformat()
     now = datetime.now().astimezone()
     for r in json.loads(FILE.read_text()):
         rid = str(r["id"])  # 状态文件是 JSON，键总是字符串
-        if r.get("done") or r.get("due", "9999") > today or sent.get(rid) == today:
+        if r.get("done") or not_due(str(r.get("due", "9999")), now) or sent.get(rid) == today:
             continue
         if r.get("until") and datetime.fromisoformat(r["until"]).astimezone() <= now:  # 不带时区的按本地时间
             continue

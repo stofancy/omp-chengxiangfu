@@ -9,3 +9,13 @@
 {"ts": "2026-11-11T11:10:00Z", "sid": "c1", "kind": "ask", "line": "日常", "n": 2, "text": "问"}
 {"ts": "2026-11-11T11:20:00Z", "sid": "c1", "kind": "input"}
 {"ts": "2026-11-20T11:00:00Z", "sid": "c1", "kind": "decision", "line": "ABC-100", "text": "范围之外"}
+{"ts": "2026-12-01T08:00:00Z", "sid": "d1", "kind": "task", "line": "PROJ-1", "agent": "Proj1"}
+{"ts": "2026-12-01T08:00:01Z", "sid": "d1", "kind": "task", "line": "PROJ-2", "agent": "Other7"}
+{"ts": "2026-12-01T08:50:00Z", "sid": "d1", "kind": "ask", "line": "PROJ-1", "n": 5, "text": "问"}
+{"ts": "2026-12-01T08:59:58Z", "sid": "d1", "kind": "decision", "line": "PROJ-3", "n": 4, "text": "发不发 → 做"}
+{"ts": "2026-12-01T09:05:00Z", "sid": "d1", "kind": "action", "line": "PROJ-3", "summary": "git push", "by": "Proj3"}
+{"ts": "2026-12-01T09:06:00Z", "sid": "d1", "kind": "action", "line": "PROJ-1", "summary": "gh write", "by": "Proj1"}
+{"ts": "2026-12-01T09:20:30Z", "sid": "d1", "kind": "correction", "line": "PROJ-2", "n": 1, "text": "改"}
+{"ts": "2026-12-01T09:21:00Z", "sid": "other", "kind": "decision", "line": "PROJ-2", "text": "别的会话里定的"}
+{"ts": "2026-12-01T09:30:00Z", "sid": "d1", "kind": "ask_close", "line": "日常", "n": 5, "outcome": "撤回", "by": "model"}
+{"ts": "2026-12-01T10:00:00Z", "sid": "d1", "kind": "action", "line": "PROJ-3", "summary": "slack write", "by": "Proj3"}

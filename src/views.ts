@@ -1,30 +1,50 @@
 // 给人看的 Markdown 视图（tasks/views/），以及每次请求注入的任务表摘要和任务卡。都由程序生成。
 import { join } from "node:path";
 import { TASKS } from "./paths";
-import { type Ev, GENERAL, type Item, type Table, type Task, isDone, openItems, openTasks, readTable, today, writeAtomic } from "./table";
+import { type Ev, GENERAL, type Item, type Review, type Table, type Task, isDone, openItems, openTasks, readTable, today, writeAtomic } from "./table";
 
 const SNAPSHOT_MAX = 4000; // 字符
 const RECENT_DECISIONS = 10;
+const RECENT_WRITES = 10;
+const PAIR_WINDOW_MIN = 30; // 远端写入之前这么多分钟内有用户对这个任务的决定，才把两者配成一对
 
 const cell = (s?: string) => (s ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
 const fileOf = (task: string) => `${task.replace(/[\\/:*?"<>|\s]+/g, "_")}.md`; // 只替换路径不安全的字符，中文任务名保留
 const when = (ts: string) => new Date(ts).toLocaleString("sv-SE").slice(5, 16);
+const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max)}…` : s);
+const tail = (s: string, max: number) => (s.length > max ? `…${s.slice(-max)}` : s); // 决定的文本是「问题 → 回答」，回答在末尾
 export const VIEWS = join(TASKS, "views");
 
+const verdict = (r?: Review) => (r ? (r.verdict === "pass" ? "passed" : "failed") : "none");
+const verdictZh = (r?: Review) => (r ? `${r.verdict === "pass" ? "通过" : "不通过"} ${when(r.at)}` : "");
+
+// 摘要里每次请求都带，下一步只留开头；完整的在视图文件里
 function itemLine(i: Item): string {
 	const parts = [`[${i.id}] ${i.title}`, i.status];
-	if (i.next) parts.push(`next: ${i.next}`);
+	if (i.next) parts.push(`next: ${clip(i.next, 120)}`);
 	if (i.chase) parts.push(`chase ${i.chase}`);
 	if (i.pr) parts.push(`PR ${i.pr}`);
+	if (i.review) parts.push(`review ${verdict(i.review)}`);
 	return `- ${parts.join(" | ")}`;
 }
 
-const reviewWord = (t: Task) => (t.review ? (t.review.verdict === "pass" ? "passed" : "failed") : "none");
-const taskHead = (t: Task) => `${t.name}${t.title ? ` ${t.title}` : ""} | owner ${t.agent ? `agent://${t.agent}` : "none"} | watching ${t.watch.length} | review ${reviewWord(t)}`;
+const taskHead = (t: Task) => `${t.name}${t.title ? ` ${t.title}` : ""} | owner ${t.agent ? `agent://${t.agent}` : "none"} | watching ${t.watch.length} | review ${verdict(t.review)}`;
 
-function describeAction(ev: Ev): string {
+// 远端写入对账：这次写入之前 30 分钟内，用户对这个任务最近的决定（最多两条：批准之后用户可能又定了别的事）。
+// 程序只配对，对不对得上由读的人（主会话、用户）判断
+function pairing(l: Table, a: Ev, zh: boolean): string {
+	if (a.kind !== "action") return "";
+	const minutes = (d: Ev) => Math.round((Date.parse(a.ts) - Date.parse(d.ts)) / 60_000);
+	const near = l.decisions.filter(d => d.ts <= a.ts && (!a.line || d.line === a.line) && minutes(d) <= PAIR_WINDOW_MIN).slice(-2).reverse();
+	if (!near.length) return zh ? ` ← 之前 ${PAIR_WINDOW_MIN} 分钟内没有你对这个任务的决定` : ` ← NO operator decision on this task in the ${PAIR_WINDOW_MIN} min before`;
+	return zh
+		? ` ← 之前你的决定：${near.map(d => `${minutes(d)} 分钟前「${tail(String(d.text), 80)}」`).join("；")}`
+		: ` ← operator decisions before it: ${near.map(d => `${minutes(d)} min earlier "${tail(String(d.text), 80)}"`).join("; ")}`;
+}
+
+function describeAction(l: Table, ev: Ev, zh: boolean): string {
 	if (ev.kind === "inbox") return `${when(ev.ts)} inbox ${ev.source}: ${ev.who ?? ""} @ ${ev.where ?? ""}`;
-	return `${when(ev.ts)} ${ev.ok === false ? "FAILED " : ""}${ev.summary}${ev.by && ev.by !== "main" ? ` (by ${ev.by})` : ""}`;
+	return `${when(ev.ts)} ${ev.ok === false ? "FAILED " : ""}${ev.summary}${ev.by && ev.by !== "main" ? ` (by ${ev.by})` : ""}${pairing(l, ev, zh)}`;
 }
 
 const decisionLine = (d: Ev) => `- (${d.line}) ${String(d.date ?? d.ts.slice(0, 10))}: ${d.text}`;
@@ -48,8 +68,14 @@ export function renderViews(): void {
 	}
 	out.push("## 待定的规则提议（用户纠正过、还没决定写不写成规则）", "");
 	out.push(...(l.corrections.size ? [...l.corrections.values()].map(k => `${k.n}. 〔${k.line}〕${k.text}`) : ["（无）"]), "");
-	out.push("## 最近动作（全部任务，最多 30 条）", "", ...l.actions.slice(-30).map(a => `- (${a.line ?? "—"}) ${describeAction(a)}`), "");
+	out.push("## 最近动作（全部任务，最多 30 条；远端写入后面是它之前你对这个任务最近的一条决定）", "", ...l.actions.slice(-30).map(a => `- (${a.line ?? "—"}) ${describeAction(l, a, true)}`), "");
 	writeAtomic(join(VIEWS, "总览.md"), out.join("\n"));
+}
+
+function reviewBlock(title: string, r: Review): string[] {
+	const out = [`### ${title}：${r.verdict === "pass" ? "通过" : "不通过"}（${r.by}，${when(r.at)}）`, "", "核对过的：", "", r.evidence || "（没写）", ""];
+	if (r.findings) out.push("发现：", "", r.findings, "");
+	return out;
 }
 
 function renderTask(l: Table, t: Task, all: Item[]): string {
@@ -57,45 +83,79 @@ function renderTask(l: Table, t: Task, all: Item[]): string {
 	if (t.name !== GENERAL) {
 		out.push(`- 状态：${t.status || "进行中"}`, `- 负责 agent：${t.agent || "（无）"}`, `- 目标：${t.goal || "（无）"}`, `- 完成判据：${t.doneWhen || "（无）"}`, `- 盯的外部输入：${t.watch.length ? "" : "（无）"}`);
 		out.push(...t.watch.map(w => `  - ${w}`), "");
-		if (t.review) {
-			const r = t.review;
-			out.push(`## 最近一次审查：${r.verdict === "pass" ? "通过" : "不通过"}（${r.by}，${when(r.at)}）`, "", "核对过的：", "", r.evidence || "（没写）", "");
-			if (r.findings) out.push("发现：", "", r.findings, "");
-		}
 	}
-	out.push("## 事项", "", "| # | 事项 | 状态 | 下一步 | 催办 | PR | 来源 |", "|---|---|---|---|---|---|---|");
-	for (const i of all) out.push(`| ${i.id} | ${cell(i.title)} | ${cell(i.status)} | ${cell(i.next)} | ${cell(i.chase)} | ${cell(i.pr)} | ${cell(i.source)} |`);
+	out.push("## 事项", "", "| # | 事项 | 状态 | 下一步 | 催办 | PR | 来源 | 审查 |", "|---|---|---|---|---|---|---|---|");
+	for (const i of all) out.push(`| ${i.id} | ${cell(i.title)} | ${cell(i.status)} | ${cell(i.next)} | ${cell(i.chase)} | ${cell(i.pr)} | ${cell(i.source)} | ${verdictZh(i.review)} |`);
+	const reviewed = all.filter(i => i.review);
+	if (t.review || reviewed.length) {
+		out.push("", "## 审查记录（每项只留最近一次）", "");
+		if (t.review) out.push(...reviewBlock("整个任务", t.review));
+		for (const i of reviewed) out.push(...reviewBlock(`${i.id} ${i.title}`, i.review as Review));
+	}
 	out.push("", "## 已定", "");
 	for (const d of l.decisions.filter(d => d.line === t.name)) out.push(`- ${String(d.date ?? d.ts.slice(0, 10))}：${d.text}`);
-	out.push("", "## 最近动作（最多 30 条）", "");
-	for (const a of l.actions.filter(a => a.line === t.name).slice(-30)) out.push(`- ${describeAction(a)}`);
+	out.push("", "## 最近动作（最多 30 条；远端写入后面是它之前你对这个任务最近的一条决定）", "");
+	for (const a of l.actions.filter(a => a.line === t.name).slice(-30)) out.push(`- ${describeAction(l, a, true)}`);
 	return `${out.join("\n")}\n`;
 }
 
-// 每次请求注入主会话的任务表摘要：不写进会话历史，所以压缩丢不掉；会话之外发生的事也在里面
-export function snapshot(running: string[]): string {
-	const l = readTable();
+const size = (lines: string[]) => lines.reduce((n, s) => n + s.length + 1, 0);
+
+// 在预算内从头往后尽量多放；放不下的只说还有几行
+function fit(lines: string[], budget: number): string[] {
+	const out: string[] = [];
+	let used = 0;
+	for (const line of lines) {
+		if (used + line.length + 1 > budget) break;
+		out.push(line);
+		used += line.length + 1;
+	}
+	if (out.length < lines.length) out.push(`…(${lines.length - out.length} more not shown; read the full board)`);
+	return out;
+}
+
+// 每次请求注入主会话的任务表摘要：不写进会话历史，所以压缩丢不掉；会话之外发生的事也在里面。
+// 长度有上限。待决定的事、每个任务和它的负责 agent、远端写入、待定的纠正、在跑的 agent 一定在；
+// 事项和用户的决定在剩下的预算里尽量多放（完整的在视图文件里，登记提问时程序也会列出已有的决定）
+export function snapshot(running: string[], l: Table = readTable()): string {
 	const asks = [...l.asks.values()].sort((a, b) => a.n - b.n);
 	const tasks = openTasks(l);
 	const items = openItems(l);
 	const names = new Set(tasks.map(t => t.name));
 	const loose = items.filter(i => !names.has(i.line));
-	const body = [
-		`Today ${today()}. Full board: ${join(VIEWS, "总览.md")}; per task (goal, completion criteria, watched inputs): ${join(VIEWS, "<task>.md")}`,
+	const head = [
+		`Today ${today()}. Full board: ${join(VIEWS, "总览.md")}; per task (goal, completion criteria, watched inputs, reviews): ${join(VIEWS, "<task>.md")}`,
 		`Waiting on the operator (${asks.length}):`,
 		...asks.map(a => `[${a.n}] (${a.line}) ${a.text}`),
-		`Open tasks (${tasks.length}):`,
-		...tasks.flatMap(t => [taskHead(t), ...items.filter(i => i.line === t.name).map(itemLine)]),
 	];
-	if (loose.length) body.push(`Open items outside any task (${loose.length}):`, ...loose.map(itemLine));
-	const decisions = l.decisions.slice(-RECENT_DECISIONS);
-	if (decisions.length) body.push(`Operator decisions (latest ${decisions.length}; older ones in the per-task views):`, ...decisions.map(decisionLine));
-	if (l.corrections.size) body.push("Open corrections (propose a rule, then tasktable_correction close):", ...[...l.corrections.values()].map(k => `[${k.n}] (${k.line}) ${k.text}`));
-	const actions = l.actions.filter(a => a.kind === "action").slice(-5); // 外部事件不占这 5 条：重启后靠它们防止重复做远端动作
-	if (actions.length) body.push("Recent actions:", ...actions.map(a => `- ${describeAction(a)}`));
-	if (running.length) body.push(`Agents running (${running.length}): ${running.join(", ")}`);
-	let text = body.join("\n");
-	if (text.length > SNAPSHOT_MAX) text = `${text.slice(0, SNAPSHOT_MAX)}\n…(truncated; read the full board)`;
+	const must: string[] = [];
+	// 远端写入：用户上次发话之后的都列出来（至少最近 5 条：重启后靠它们防止重复做远端动作），各自配上之前的用户决定
+	const writes = l.actions.filter(a => a.kind === "action");
+	const fresh = l.lastInput ? writes.filter(a => a.ts > (l.lastInput as string)).length : 0;
+	const shown = writes.slice(-Math.min(RECENT_WRITES, Math.max(5, fresh)));
+	if (shown.length) must.push("Remote writes (each paired with the operator's last decision on that task before it; in your next report, name any write its decision does not cover):", ...shown.map(a => `- ${describeAction(l, a, false)}`));
+	if (l.corrections.size) must.push("Open corrections (propose a rule, then tasktable_correction close):", ...[...l.corrections.values()].map(k => `[${k.n}] (${k.line}) ${k.text}`));
+	if (running.length) must.push(`Agents running (${running.length}): ${running.join(", ")}`);
+
+	let budget = SNAPSHOT_MAX - size(head) - size(must) - size(tasks.map(taskHead));
+	const work = [`Open tasks (${tasks.length}):`];
+	// 事项的预算各任务平分，用不完的留给后面的：一个事项很多的任务不会把别的任务挤没
+	const group = (lines: string[], share: number) => {
+		const kept = fit(lines, share);
+		budget -= size(kept);
+		work.push(...kept);
+	};
+	tasks.forEach((t, n) => {
+		work.push(taskHead(t));
+		group(items.filter(i => i.line === t.name).map(itemLine), Math.max(budget, 0) / (tasks.length - n));
+	});
+	if (loose.length) {
+		work.push(`Open items outside any task (${loose.length}):`);
+		group(loose.map(itemLine), budget);
+	}
+	const decisions = fit(l.decisions.slice(-RECENT_DECISIONS).reverse().map(d => clip(decisionLine(d), 200)), budget);
+	const decided = decisions[0]?.startsWith("- ") ? ["Operator decisions (newest first; all of them are in the per-task views):", ...decisions] : []; // 一条都放不下就不占地方
+	const text = [...head, ...work, ...must, ...decided].join("\n");
 	return [
 		`<tasktable-context source="chengxiangfu extension" from_operator="no">`,
 		"Injected automatically on every request; NOT a message from the operator. Do not acknowledge, quote or summarise it unless the request needs these items.",
@@ -116,13 +176,23 @@ export function taskCard(t: Task): string {
 	].join("\n");
 }
 
+// 登记提问时给模型看：这个任务已经定过什么、还有哪些没答的提问，免得把定过的事再问一遍
+export function decidedFor(l: Table, task: string, exceptAsk: number): string {
+	const decisions = l.decisions.filter(d => d.line === task).slice(-15);
+	const open = [...l.asks.values()].filter(a => a.line === task && a.n !== exceptAsk);
+	const out: string[] = [];
+	if (decisions.length) out.push(`Operator decisions already on record for ${task} (latest ${decisions.length}):`, ...decisions.map(d => `- ${String(d.date ?? d.ts.slice(0, 10))}: ${tail(String(d.text), 160)}`));
+	if (open.length) out.push(`Other open questions for ${task}:`, ...open.map(a => `- [${a.n}] ${clip(a.text, 160)}`));
+	return out.join("\n");
+}
+
 // 某个时间点之后任务表里的变化：用户离开后回来时给模型看
 export function since(ts: string): string {
 	const l = readTable();
 	const out: string[] = [];
 	for (const byTask of l.items.values()) for (const i of byTask.values()) if (i.updated > ts) out.push(`(${i.line}) ${itemLine(i).slice(2)}`);
 	for (const d of l.decisions) if (d.ts > ts) out.push(decisionLine(d));
-	for (const a of l.actions) if (a.ts > ts) out.push(`- ${describeAction(a)}`);
+	for (const a of l.actions) if (a.ts > ts) out.push(`- ${describeAction(l, a, false)}`);
 	if (!out.length) return "（任务表里没有新记录；外部系统的变化要去查）";
 	return out.length > 30 ? [`…前面还有 ${out.length - 30} 条，见 ${join(VIEWS, "总览.md")} 的「最近动作」`, ...out.slice(-30)].join("\n") : out.join("\n");
 }

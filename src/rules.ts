@@ -7,13 +7,14 @@ import { CONFIG } from "./paths";
 export interface RuleSettings {
 	language: string; // 对用户用的语言；空 = 用户自己用的语言
 	report_lines: number; // 汇报默认行数上限
+	wake_lines: number; // 不是用户发话引起的回合（子代理交回、外部消息叫醒）的回复行数上限
 	max_asks: number; // 一次最多问几件
 	away_hours: number; // 用户隔多久再发话算「离开后回来」；0 = 不提示
 	cold_read: boolean; // 对外消息发出前冷读
 	owner_model: string; // 任务的负责 agent 用什么模型（模型名或 @角色）；空 = 跟主会话一样
 }
 
-const DEFAULTS: RuleSettings = { language: "", report_lines: 15, max_asks: 3, away_hours: 2, cold_read: true, owner_model: "" };
+const DEFAULTS: RuleSettings = { language: "", report_lines: 15, wake_lines: 5, max_asks: 3, away_hours: 2, cold_read: true, owner_model: "" };
 
 // config.json 和外部事件源共用，写错一处不能让主会话丢掉规则：读不了或类型不对就用默认值
 export function settings(): RuleSettings {
@@ -23,10 +24,11 @@ export function settings(): RuleSettings {
 	} catch (err) {
 		logError("config.json", err);
 	}
-	const num = (k: "report_lines" | "max_asks" | "away_hours") => (Number.isFinite(raw[k]) && (raw[k] as number) >= 0 ? (raw[k] as number) : DEFAULTS[k]);
+	const num = (k: "report_lines" | "wake_lines" | "max_asks" | "away_hours") => (Number.isFinite(raw[k]) && (raw[k] as number) >= 0 ? (raw[k] as number) : DEFAULTS[k]);
 	return {
 		language: typeof raw.language === "string" ? raw.language : DEFAULTS.language,
 		report_lines: num("report_lines"),
+		wake_lines: num("wake_lines"),
 		max_asks: num("max_asks"),
 		away_hours: num("away_hours"),
 		cold_read: typeof raw.cold_read === "boolean" ? raw.cold_read : DEFAULTS.cold_read,
@@ -38,6 +40,7 @@ export function renderRules(template: string, s: RuleSettings): string {
 	const values: Record<string, string> = {
 		language: s.language || "用户自己用的语言",
 		report_lines: String(s.report_lines),
+		wake_lines: String(s.wake_lines),
 		max_asks: String(s.max_asks),
 		cold_read: s.cold_read
 			? "\n- 发给别人的消息，发出前用 `completion()` 低档单次调用冷读：只给原文和读者角色，让它答「这是什么、要我做什么、哪句看不懂」；答不上来就重写。"
@@ -71,9 +74,16 @@ export function checkReply(text: string, codes: Iterable<string>): ReplyCheck {
 	return { lines, codes: [...found] };
 }
 
-export function feedback(c: ReplyCheck, maxLines: number | undefined): string | undefined {
+// woken：这一轮不是用户发话引起的（子代理交回、外部消息叫醒）
+export function feedback(c: ReplyCheck, maxLines: number | undefined, woken = false): string | undefined {
 	const parts: string[] = [];
-	if (maxLines !== undefined && c.lines > maxLines) parts.push(`上一次回复有 ${c.lines} 行，超过默认上限 ${maxLines} 行（用户要细节时除外）`);
+	if (maxLines !== undefined && c.lines > maxLines) {
+		parts.push(
+			woken
+				? `上一次回复不是用户发话引起的（子代理交回或外部消息叫醒），有 ${c.lines} 行，超过这种回合的上限 ${maxLines} 行：用户没在等的进展只记任务表，攒到他下次发话再报，这种回合只留要他定的事和他在等的答复`
+				: `上一次回复有 ${c.lines} 行，超过默认上限 ${maxLines} 行（用户要细节时除外）`,
+		);
+	}
 	if (c.codes.length) parts.push(`上一次回复出现了裸代号：${c.codes.join("、")}，应换成人能看懂的名字`);
 	return parts.length ? `${parts.join("；")}。` : undefined;
 }
