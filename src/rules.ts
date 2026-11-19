@@ -12,9 +12,10 @@ export interface RuleSettings {
 	away_hours: number; // 用户隔多久再发话算「离开后回来」；0 = 不提示
 	cold_read: boolean; // 对外消息发出前冷读
 	owner_model: string; // 任务的负责 agent 用什么模型（模型名或 @角色）；空 = 跟主会话一样
+	stall_minutes: number; // 子代理多久没交回就叫醒主会话去看一眼（之后每次翻倍）；0 = 不叫
 }
 
-const DEFAULTS: RuleSettings = { language: "", report_lines: 15, wake_lines: 5, max_asks: 3, away_hours: 2, cold_read: true, owner_model: "" };
+const DEFAULTS: RuleSettings = { language: "", report_lines: 15, wake_lines: 5, max_asks: 3, away_hours: 2, cold_read: true, owner_model: "", stall_minutes: 15 };
 
 // config.json 和外部事件源共用，写错一处不能让主会话丢掉规则：读不了或类型不对就用默认值
 export function settings(): RuleSettings {
@@ -24,7 +25,7 @@ export function settings(): RuleSettings {
 	} catch (err) {
 		logError("config.json", err);
 	}
-	const num = (k: "report_lines" | "wake_lines" | "max_asks" | "away_hours") => (Number.isFinite(raw[k]) && (raw[k] as number) >= 0 ? (raw[k] as number) : DEFAULTS[k]);
+	const num = (k: "report_lines" | "wake_lines" | "max_asks" | "away_hours" | "stall_minutes") => (Number.isFinite(raw[k]) && (raw[k] as number) >= 0 ? (raw[k] as number) : DEFAULTS[k]);
 	return {
 		language: typeof raw.language === "string" ? raw.language : DEFAULTS.language,
 		report_lines: num("report_lines"),
@@ -33,6 +34,7 @@ export function settings(): RuleSettings {
 		away_hours: num("away_hours"),
 		cold_read: typeof raw.cold_read === "boolean" ? raw.cold_read : DEFAULTS.cold_read,
 		owner_model: typeof raw.owner_model === "string" ? raw.owner_model.trim() : DEFAULTS.owner_model,
+		stall_minutes: num("stall_minutes"),
 	};
 }
 

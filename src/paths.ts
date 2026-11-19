@@ -19,3 +19,7 @@ export const DISPATCH_RULES = prompt("调度规则.md");
 export const OWNER_RULES = prompt("负责人规则.md");
 export const REVIEW_RULES = prompt("审查规则.md");
 export const ORDERS = prompt("常设约束.md");
+export const HEALTH = join(HOME, "state/health"); // 每个接收程序一个文件：最后一次成功的时间、最近的错
+export const WATCH_PLAN = join(HOME, "state/watch.json"); // 未完成任务登记的、接收程序读得到的盯办项：补读和实时推送照它定范围
+export const HEADS = join(HOME, "state/heads"); // 每个会话一个文件：回复上方画过的标头，续会话时照原样画回去
+export const HELD = join(HOME, "state/held"); // 每个主会话一个目录：子代理写好了、omp 还压着没送的交回

@@ -28,7 +28,9 @@ function itemLine(i: Item): string {
 	return `- ${parts.join(" | ")}`;
 }
 
-const taskHead = (t: Task) => `${t.name}${t.title ? ` ${t.title}` : ""} | owner ${t.agent ? `agent://${t.agent}` : "none"} | watching ${t.watch.length} | review ${verdict(t.review)}`;
+// unobserved：这个任务登记的盯办项里，没有接收程序读得到的有几个
+const taskHead = (t: Task, unobserved = 0) =>
+	`${t.name}${t.title ? ` ${t.title}` : ""} | owner ${t.agent ? `agent://${t.agent}` : "none"} | watching ${t.watch.length}${unobserved ? ` (${unobserved} of them no source can observe)` : ""} | review ${verdict(t.review)}`;
 
 // 远端写入对账，只放在任务视图里供人抽查：这次写入之前 30 分钟内，用户对这个任务最近的决定（最多两条）。
 // 不放进给模型的摘要：批准常常早于 30 分钟，配不上是常态，模型会在每次汇报里解释一遍
@@ -112,12 +114,19 @@ function fit(lines: string[], budget: number): string[] {
 	return out;
 }
 
+// 接收程序的故障和登记了却没人盯的盯办项：由调用方（知道本机配置的那一侧）算好传进来
+export interface Monitoring {
+	faults?: Array<{ text: string; fresh: boolean }>; // fresh：还没告诉过用户
+	unobserved?: (watch: string[]) => number;
+}
+
 // 每次请求注入主会话的任务表摘要：不写进会话历史，所以压缩丢不掉；会话之外发生的事也在里面。
-// 长度有上限。待决定的事、每个任务和它的负责 agent、远端写入、待定的纠正、在跑的 agent 一定在；
+// 长度有上限。待决定的事、每个任务和它的负责 agent、远端写入、待定的纠正、在跑的 agent、接收程序的故障一定在；
 // 事项和用户的决定在剩下的预算里尽量多放（完整的在视图文件里，登记提问时程序也会列出已有的决定）
-export function snapshot(running: string[], l: Table = readTable()): string {
+export function snapshot(running: string[], l: Table = readTable(), monitoring: Monitoring = {}): string {
 	const asks = [...l.asks.values()].sort((a, b) => a.n - b.n);
 	const tasks = openTasks(l);
+	const heads = tasks.map(t => taskHead(t, monitoring.unobserved?.(t.watch) ?? 0));
 	const items = openItems(l);
 	const names = new Set(tasks.map(t => t.name));
 	const loose = items.filter(i => !names.has(i.line));
@@ -133,9 +142,14 @@ export function snapshot(running: string[], l: Table = readTable()): string {
 	const shown = writes.slice(-Math.min(RECENT_WRITES, Math.max(5, fresh)));
 	if (shown.length) must.push("Remote writes recorded by the program (before redoing one, check its real state first):", ...shown.map(a => `- ${describeAction(l, a, false)}`));
 	if (l.corrections.size) must.push("Open corrections (propose a rule, then tasktable_correction close):", ...[...l.corrections.values()].map(k => `[${k.n}] (${k.line}) ${k.text}`));
-	if (running.length) must.push(`Agents running (${running.length}): ${running.join(", ")}`);
+	if (running.length) must.push(`Agents running (${running.length}): ${running.join("; ")}`);
+	// 故障用户在屏幕上看得到：新出现的让模型说一次，说过的不重复
+	const unsaid = monitoring.faults?.filter(f => f.fresh) ?? [];
+	const said = monitoring.faults?.filter(f => !f.fresh) ?? [];
+	if (unsaid.length) must.push("Receivers that stopped working (NEW: tell the operator once, in your next reply; do not try to fix them):", ...unsaid.map(f => `- ${f.text}`));
+	if (said.length) must.push("Receivers still not working (the operator has been told and sees them on screen; do not repeat it, except when you say you are waiting for something that arrives through one of them):", ...said.map(f => `- ${f.text}`));
 
-	let budget = SNAPSHOT_MAX - size(head) - size(must) - size(tasks.map(taskHead));
+	let budget = SNAPSHOT_MAX - size(head) - size(must) - size(heads);
 	const work = [`Open tasks (${tasks.length}):`];
 	// 事项的预算各任务平分，用不完的留给后面的：一个事项很多的任务不会把别的任务挤没
 	const group = (lines: string[], share: number) => {
@@ -144,7 +158,7 @@ export function snapshot(running: string[], l: Table = readTable()): string {
 		work.push(...kept);
 	};
 	tasks.forEach((t, n) => {
-		work.push(taskHead(t));
+		work.push(heads[n]);
 		group(items.filter(i => i.line === t.name).map(itemLine), Math.max(budget, 0) / (tasks.length - n));
 	});
 	if (loose.length) {

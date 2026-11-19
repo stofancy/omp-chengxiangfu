@@ -8,13 +8,18 @@
 // - 按层定模型：派出任务的负责 agent 时由程序指定模型（默认跟主会话一样）；它再派的帮手照 omp 自己的配置。
 // - 审查：任务要记成「完成」，任务表里得先有主会话另派的审查者记下的「通过」；事项记完成不拦，审不审由主会话按大小定。
 // - 提问：登记提问时要写查过哪里，程序把这个任务已有的决定列给模型看。
+// - 看得见：每条回复上方画一行标头（回答、交出、交回、审查结果…），输入框上方固定显示等用户定的事、在跑的负责 agent、接收程序的故障。
+// - 不傻等：子代理写好了却被 omp 压着的交回由程序送达；子代理久未交回时叫醒主会话去看。
 // 远端写入自动记到任务表；给人看的视图里配上它之前用户最近的决定。除了审查那一条，不拦截任何操作。
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { DISPATCH_RULES, HOME, INBOX_CLAIMED, INBOX_NEW, ORDERS, OWNER_RULES, REVIEW_RULES, USER_RULES } from "./paths";
+import { holdHandback, releaseHandback } from "./agents";
+import { handbackKind } from "./heads";
+import { DISPATCH_RULES, HELD, HOME, INBOX_CLAIMED, INBOX_NEW, ORDERS, OWNER_RULES, REVIEW_RULES, USER_RULES } from "./paths";
 import { remoteWrite } from "./remote";
 import { checkReply, feedback, renderRules, settings } from "./rules";
+import { createScreen, messageRow } from "./screen";
 import { OFF_MESSAGE, isOn, setOn } from "./switch";
 import { type Ev, GENERAL, type Table, agentTaken, append, doneBlocker, isReviewerName, logError, needsReview, openTasks, readTable, taskOfAgent, taskOfReviewer, today } from "./table";
 import { decidedFor, renderViews, since, snapshot, taskCard } from "./views";
@@ -28,16 +33,19 @@ const TITLE = "调度"; // 打开调度器模式的会话叫这个名字，不�
 const ANSWER = /(?<!\d)(\d{1,3})\s*[.、:：)）]?\s*([^\s\d;；,，。.、:：]{1,4})(?=[\s;；,，。.、]|$)/g;
 
 // 本机没有 omp 扩展的类型声明（运行时由 omp 解析），这里只声明用到的字段
+interface Job { id: string; label?: string; type?: string; agentId?: string; startTime?: number }
 interface Ctx {
 	agent?: { kind?: string; id?: string };
 	sessionManager?: { getSessionFile?(): string | undefined };
 	models?: { current?(): { provider?: string; id?: string } | undefined };
 	getSystemPrompt?(): string | string[] | undefined;
-	getAsyncJobSnapshot?(): { running?: Array<{ id: string; label?: string }> } | null;
+	getAsyncJobSnapshot?(): { running?: Job[] } | null;
 	setInterval(fn: () => void | Promise<void>, ms: number): unknown;
 	ui: {
 		notify(message: string, level: "info" | "warning" | "error"): void;
 		setStatus?(key: string, text: string | undefined): void;
+		setWidget?(key: string, lines: string[] | undefined, options?: { placement: "aboveEditor" | "belowEditor" }): void;
+		rerenderMessage?(timestamp: number): void;
 	};
 }
 interface InboxFile { source?: string; who?: string; where?: string; link?: string; line?: string; note?: string; urgent?: boolean }
@@ -91,15 +99,49 @@ export default function (pi: ExtensionAPI): void {
 	let awayDelivered = false; // 离开提示已随用户那条消息交付，那一轮答完就清掉
 	let userTurn = false; // 这一轮是用户发话引起的（不是外部事件叫醒的）：只有这种回复才算用户看过
 
+	const jobs = (ctx: Ctx): Job[] => ctx.getAsyncJobSnapshot?.()?.running ?? [];
+
+	const screen = createScreen({
+		on: () => isOn(session),
+		session: () => session,
+		sessionDir: () => ui?.sessionManager?.getSessionFile?.()?.replace(/\.jsonl$/, ""),
+		userTurn: () => userTurn,
+		send: message => pi.sendMessage(message, { deliverAs: "nextTurn", triggerTurn: true }),
+	});
+	// 回复上方的标头：omp 画每块回复文字时来问。旧版本的 omp 没有这个接口就不画
+	const draw = pi as unknown as { registerAssistantTextRenderer?(fn: typeof screen.render): void; registerMessageRenderer?(type: string, fn: typeof messageRow): void; pi?: { settings?: unknown } };
+	draw.registerAssistantTextRenderer?.(screen.render);
+	// 插件自己送进会话的三种消息各画成一行，不把给模型看的英文说明整段摊在屏幕上
+	for (const type of ["chengxiangfu-inbox", "chengxiangfu-handback", "chengxiangfu-stall"]) draw.registerMessageRenderer?.(type, messageRow);
+	// 这个接口默认是关的（omp 的设置「扩展回复渲染」）：调度器模式开着时在本进程里打开，不改用户的配置文件；用户自己配过的不动
+	let rendererForced = false;
+	const syncRenderer = async () => {
+		try {
+			const { lookup } = (await import("@oh-my-pi/pi-coding-agent/config/registry")) as { lookup(id: string): { get(scope: unknown): unknown; isConfigured(scope: unknown): boolean; override(scope: unknown, value: unknown): void; clearOverride(scope: unknown): void } | undefined };
+			const setting = lookup("extensionRenderers.assistantText");
+			const scope = draw.pi?.settings;
+			if (!setting || !scope) return;
+			if (isOn(session) && !rendererForced && !setting.isConfigured(scope)) {
+				setting.override(scope, true);
+				rendererForced = true;
+			} else if (!isOn(session) && rendererForced) {
+				setting.clearOverride(scope);
+				rendererForced = false;
+			}
+		} catch (err) {
+			logError("renderer setting", err);
+		}
+	};
+
 	const record = (ev: Omit<Ev, "ts">) => {
 		append(ev);
 		renderViews();
+		if (ev.kind === "task") screen.writePlan(); // 盯办项或任务状态变了：接收程序的监听范围跟着变
 	};
-	const running = (ctx: Ctx) => (ctx.getAsyncJobSnapshot?.()?.running ?? []).map(j => (j.label ? `${j.id} (${j.label})` : j.id));
 
 	const status = (ctx: Ctx): string => {
 		const l = readTable();
-		const parts = [`📋 任务 ${openTasks(l).length}`, `待你决定 ${l.asks.size}`, `在跑的 agent ${running(ctx).length}`, `新消息 ${inboxSinceInput}`];
+		const parts = [`📋 任务 ${openTasks(l).length}`, `待你决定 ${l.asks.size}`, `在跑的 agent ${jobs(ctx).length}`, `新消息 ${inboxSinceInput}`];
 		if (urgentSinceInput) parts.push(`其中私信/@你 ${urgentSinceInput}`); // 都是你上次发话以来到的，发话后清零
 		return parts.join(" · ");
 	};
@@ -160,6 +202,7 @@ export default function (pi: ExtensionAPI): void {
 		if (!ui || !isOn(session)) return;
 		claimInbox();
 		showStatus(ui);
+		screen.tick(ui.ui, jobs(ui));
 	};
 
 	// ---------- 会话与开关 ----------
@@ -168,6 +211,9 @@ export default function (pi: ExtensionAPI): void {
 		session = sessionOf(ctx);
 		ui = ctx;
 		showStatus(ctx);
+		screen.clear(ctx.ui); // 换了会话：上一个会话的固定区撤掉，开着调度器模式的下一拍重画
+		if (isOn(session)) screen.writePlan();
+		void syncRenderer();
 	};
 
 	// 任务表工具只在打开了调度器模式的会话里注册（子代理跟随它所属的主会话）：没打开过的会话里它们不存在。
@@ -221,7 +267,12 @@ export default function (pi: ExtensionAPI): void {
 			const off = /^(off|关|关闭)$/i.test(args.trim());
 			setOn(session, !off);
 			await syncTools().catch(err => logError("tools", err));
-			if (!off) await naming.setSessionName?.(TITLE);
+			await syncRenderer();
+			if (off) screen.clear(ctx.ui);
+			else {
+				await naming.setSessionName?.(TITLE);
+				screen.writePlan();
+			}
 			showStatus(ctx);
 			ctx.ui.notify(off ? "调度器模式已关闭：这个会话里插件不再做任何事" : "调度器模式已打开：你说的话和外部消息会按任务交给各自的负责 agent", "info");
 		},
@@ -279,11 +330,12 @@ export default function (pi: ExtensionAPI): void {
 		const orders = `<chengxiangfu-orders data_dir="${HOME}">\n${read(ORDERS)}</chengxiangfu-orders>\n`;
 		let text = preface + orders;
 		if (isMain(ctx)) {
+			screen.context(e.messages);
 			const stable = stableRules();
 			const cached = inSystemPrompt(ctx, stable);
 			const extra = read(USER_RULES); // 用户的补充规则常改（每次纠正后），留在末尾，不拖着整段缓存重写
 			const notes = [replyNote, awayDelivered ? awayNote : undefined].filter(Boolean);
-			text = `${preface}${cached ? "" : stable}${extra ? `<chengxiangfu-user-rules>\n${extra}</chengxiangfu-user-rules>\n` : ""}${snapshot(running(ctx))}`;
+			text = `${preface}${cached ? "" : stable}${extra ? `<chengxiangfu-user-rules>\n${extra}</chengxiangfu-user-rules>\n` : ""}${snapshot(screen.running(jobs(ctx)), readTable(), screen.monitoring())}`;
 			if (notes.length) text += `\n<chengxiangfu-notes>\n${notes.join("\n")}\n</chengxiangfu-notes>`;
 		} else {
 			// 只有任务的负责 agent 和审查者（一层的子代理，名字对得上任务）收规矩和任务卡；负责 agent 派出的帮手只收常设约束
@@ -307,8 +359,33 @@ export default function (pi: ExtensionAPI): void {
 		if (Array.isArray(e.systemPrompt)) return { systemPrompt: [...e.systemPrompt, stable] };
 		if (typeof e.systemPrompt === "string") return { systemPrompt: `${e.systemPrompt}\n${stable}` };
 	});
-	pi.on("agent_end", async (_e: unknown, ctx: Ctx) => {
-		if (isMain(ctx)) userTurn = false;
+	pi.on("agent_start", async (_e: unknown, ctx: Ctx) => {
+		if (isMain(ctx) && on(ctx)) screen.turnStart();
+	});
+	pi.on("agent_end", async (e: { messages?: Array<{ role?: string; content?: unknown }>; awaitingAsyncWork?: boolean }, ctx: Ctx) => {
+		if (isMain(ctx)) {
+			if (on(ctx)) screen.turnEnd(ctx.ui);
+			userTurn = false;
+			return;
+		}
+		// 任务的负责 agent 或审查者这一侧：这一轮写完了交回，但自己还有后台命令或帮手在跑时，omp 不会把它送给主会话
+		// （要等它完全空闲，到时送的也只是它最后说的话）。先记下来，主会话那一侧过了宽限期自己送达（见 screen.ts）
+		try {
+			const id = ctx.agent?.id ?? "";
+			const s = sessionOf(ctx);
+			if (!s || !isOn(s) || !id || id.includes(".")) return;
+			const l = readTable();
+			if (!taskOfAgent(l, id) && !taskOfReviewer(l, id)) return;
+			const last = [...(e.messages ?? [])].reverse().find(m => m.role === "assistant");
+			const blocks = Array.isArray(last?.content) ? (last.content as Array<{ type?: string; text?: string }>) : [];
+			if (blocks.some(b => b.type === "toolCall")) return;
+			const text = blocks.filter(b => b.type === "text").map(b => b.text ?? "").join("\n").trim();
+			if (!text) return;
+			if (!e.awaitingAsyncWork) releaseHandback(join(HELD, s), id, text);
+			else if (handbackKind(text)) holdHandback(join(HELD, s), id, text, Date.now());
+		} catch (err) {
+			logError("held hand-back", err);
+		}
 	});
 
 	// 按层定模型：主会话派出任务的负责 agent 时，用配置的模型，没配就跟主会话一样（模型和思考档）；派出审查者时跟主会话一样。
@@ -333,6 +410,7 @@ export default function (pi: ExtensionAPI): void {
 		if (m.stopReason === "aborted" || m.stopReason === "error" || m.content.some(b => b.type === "toolCall")) return;
 		const text = m.content.filter(b => b.type === "text").map(b => b.text ?? "").join("\n").trim();
 		if (!text) return;
+		screen.replied();
 		const l = readTable();
 		const ids = new Set<string>(); // 负责 agent 的名字不算：规则要求提到它时说清它在做哪个任务
 		for (const byTask of l.items.values()) for (const i of byTask.values()) ids.add(i.id);
@@ -352,6 +430,12 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("tool_execution_start", async (e: { toolCallId?: string; toolName: string; args?: Input }, ctx: Ctx) => {
 		if (!on(ctx)) return;
+		if (isMain(ctx)) {
+			// 这一轮把活交给了谁：标头里要写
+			if (e.toolName === "task") for (const t of (e.args?.tasks as Array<{ name?: string }> | undefined) ?? []) if (t?.name) screen.handedTo(t.name);
+			const to = e.toolName === "write" ? /^agent:\/\/([^/?#]+)/.exec(String(e.args?.path ?? ""))?.[1] : undefined;
+			if (to && to !== "all" && to !== "Main") screen.handedTo(to);
+		}
 		const summary = remoteWrite(e.toolName, e.args);
 		if (summary && e.toolCallId) pending.set(e.toolCallId, summary);
 	});
@@ -377,14 +461,14 @@ export default function (pi: ExtensionAPI): void {
 		name: "tasktable_task",
 		label: "Task table task",
 		description:
-			"Create or update a task: its owner agent, goal, completion criteria and the external inputs it watches. Only the fields you pass are changed. A new task needs agent and done_when; after creating it, spawn the owner with the task tool using exactly that agent name, so agent://<name> is this task's owner. External events matching a watched link (Slack thread or channel, PR, ticket key) are routed to this task. Set status to 完成 to close it; that is refused until a reviewer has recorded a passing review with tasktable_review. 取消 closes it without a review.",
+			"Create or update a task: its owner agent, goal, completion criteria and the external inputs it watches. Only the fields you pass are changed. A new task needs agent and done_when; after creating it, spawn the owner with the task tool using exactly that agent name, so agent://<name> is this task's owner. Watched Slack links (a message or thread, a channel, a DM) and PR links are read by the receivers, and new activity there is routed to this task; the result of this call says which of the entries you added no receiver can observe. Set status to 完成 to close it; that is refused until a reviewer has recorded a passing review with tasktable_review. 取消 closes it without a review.",
 		parameters: z.object({
 			task: z.string().describe("Task name, e.g. a ticket key like PROJ-123 or a short name."),
 			agent: z.string().optional().describe("Owner agent name, CamelCase ASCII (e.g. Proj123); unique among open tasks."),
 			title: z.string().optional().describe("Short title the operator understands."),
 			goal: z.string().optional().describe("What the task is for. No implementation plan."),
 			done_when: z.string().optional().describe("Checkable completion criteria: commands, artifacts, links."),
-			watch_add: z.array(z.string()).optional().describe("Links or identifiers to start watching."),
+			watch_add: z.array(z.string()).optional().describe("Things to start watching, as full links: a Slack message, thread, channel or DM link, a PR link. Ticket keys and other identifiers are accepted but nobody observes them; they only help route messages."),
 			watch_remove: z.array(z.string()).optional().describe("Links or identifiers to stop watching."),
 			status: z.string().optional().describe("Leave empty while in progress; 完成 or 取消 closes the task."),
 		}),
@@ -407,7 +491,8 @@ export default function (pi: ExtensionAPI): void {
 			const fields = Object.fromEntries(Object.entries({ ...rest, agent }).filter(([, v]) => (Array.isArray(v) ? v.length : typeof v === "string")));
 			if (!Object.keys(fields).length) throw new Error("nothing to change");
 			record({ sid: s, kind: "task", line: task, ...fields });
-			return { content: [{ type: "text", text: isNew ? `created ${task}. Now spawn its owner with the task tool, name="${agent}".` : `updated ${task}` }] };
+			const blind = p.watch_add?.length ? screen.coverage(p.watch_add) : "";
+			return { content: [{ type: "text", text: `${isNew ? `created ${task}. Now spawn its owner with the task tool, name="${agent}".` : `updated ${task}`}${blind}` }] };
 		},
 	};
 

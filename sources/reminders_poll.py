@@ -10,7 +10,7 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
-from inbox import CONFIG, load_state, save_state, write_event
+from inbox import CONFIG, health, load_state, save_state, write_event
 
 SPEC = CONFIG["reminders"]
 FILE = Path(SPEC["file"]).expanduser()
@@ -30,26 +30,35 @@ def main():
     sent = load_state("reminders.json", {})
     today = date.today().isoformat()
     now = datetime.now().astimezone()
+    bad = []
     for r in json.loads(FILE.read_text()):
         try:
             rid = str(r["id"])  # 状态文件是 JSON，键总是字符串
-            if r.get("done") or not_due(str(r["due"]), now) or sent.get(rid) == today:
+            if r.get("done"):
+                continue
+            note = f"due {r['due']}: {r['text'][:200]}"  # 没到期的也先核对字段：写错的当场就能发现，不用等到期那天
+            if not_due(str(r["due"]), now) or sent.get(rid) == today:
                 continue
             if r.get("until") and datetime.fromisoformat(r["until"]).astimezone() <= now:  # 不带时区的按本地时间
                 continue
-            note = f"due {r['due']}: {r['text'][:200]}"
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             # 一条写错了（缺字段、类型不对）只跳过这一条：别的提醒照常发
-            print(f"{time.strftime('%F %T')} reminders: skipped a malformed entry ({r.get('id', '?') if isinstance(r, dict) else '?'}): {exc!r}", file=sys.stderr)
+            bad.append(f"{r.get('id', '?') if isinstance(r, dict) else '?'} ({exc!r})")
             continue
         write_event("reminder", FILE.name, rid, str(FILE), line=SPEC.get("line", "日常"), note=note, urgent=True)
         sent[rid] = today
     save_state("reminders.json", sent)
+    return bad
 
 
 if __name__ == "__main__":
     try:
-        main()
+        bad = main()
     except Exception as exc:
+        health("reminders", "提醒", 1800, error=exc)
         print(f"{time.strftime('%F %T')} reminders poll failed: {exc}", file=sys.stderr)
         sys.exit(1)
+    # 写错的条目不会提醒：留在 error 里，让人看得见
+    health("reminders", "提醒", 1800, error=f"malformed entries skipped: {'; '.join(bad)}" if bad else None, partial=True)
+    if bad:
+        print(f"{time.strftime('%F %T')} reminders: skipped malformed entries: {'; '.join(bad)}", file=sys.stderr)

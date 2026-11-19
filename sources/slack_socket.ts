@@ -1,9 +1,11 @@
 // Slack 实时推送（Socket Mode）常驻进程：别人发来的相关消息写成外部消息文件。只读 Slack。
 //
-// 哪些消息算相关：config.json 里 slack.channels 列的频道；发给你的私信和群聊私信；任何频道里 @ 到你的消息。
+// 哪些消息算相关：config.json 里 slack.channels 列的频道；未完成任务登记要盯的频道、私信和 thread（state/watch.json）；
+// 发给你的私信和群聊私信；任何频道里 @ 到你的消息。
 // 私信和 @ 标为紧急（状态栏单独计数）。外部消息只写「谁、在哪、链接」，不写原文。
-// 断线期间的事件 Slack 不会补发，由 slack_poll.py 定时补读关注的频道；两边写同一条消息只进一次。
-import { config, readSecret, writeEvent } from "./config";
+// 断线期间的事件 Slack 不会补发，由 slack_poll.py 定时补读关注的地方；两边写同一条消息只进一次。
+// 连接会悄悄死掉（切 VPN、机器休眠后进程和连接都还在，但再也收不到东西）：每 30 秒发一次心跳，90 秒没回音就重连。
+import { config, readSecret, slackWatch, writeEvent, writeHealth } from "./config";
 
 const slack = config.slack;
 if (!slack) throw new Error("config.json 里没有 slack 配置");
@@ -39,13 +41,15 @@ async function handle(ev: SlackMessage): Promise<void> {
 	const watched = slack.channels[ev.channel];
 	const direct = ev.channel_type === "im" || ev.channel_type === "mpim";
 	const mention = (ev.text ?? "").includes(`<@${slack.me}>`);
-	if (!watched && !direct && !mention) return;
+	const watch = slackWatch();
+	const task = watch.channels.get(ev.channel) ?? watch.threads.get(`${ev.channel}:${ev.thread_ts ?? ev.ts}`);
+	if (!watched && !direct && !mention && !task) return;
 	const who = await lookup("users.info", "user", ev.user);
 	const reply = ev.thread_ts && ev.thread_ts !== ev.ts;
 	const place = watched?.name ?? (ev.channel_type === "im" ? `DM ${who}` : direct ? "group DM" : await lookup("conversations.info", "channel", ev.channel));
 	const link = `https://${slack.domain}.slack.com/archives/${ev.channel}/p${ev.ts.replace(".", "")}${reply ? `?thread_ts=${ev.thread_ts}` : ""}`;
 	// 私信和 @ 你的消息不归线：送到你最近发过话的账本
-	const event = { source: "slack", who, where: place + (reply ? " (thread reply)" : ""), link, line: direct || mention ? undefined : watched?.line, urgent: direct || mention };
+	const event = { source: "slack", who, where: place + (reply ? " (thread reply)" : ""), link, line: direct || mention ? undefined : (watched?.line ?? task), urgent: direct || mention };
 	const [sec, frac = ""] = ev.ts.split(".");
 	if (writeEvent(event, `${ev.channel}-${ev.ts}`, BigInt(sec) * 1_000_000_000n + BigInt(frac.padEnd(9, "0").slice(0, 9)))) {
 		log(`inbox ${event.where} from ${who}${event.urgent ? " (urgent)" : ""}`);
@@ -59,24 +63,47 @@ async function openUrl(): Promise<string> {
 	return body.url;
 }
 
+const PING_MS = 30_000;
+const DEAD_MS = 90_000;
+const health = (error?: string) => writeHealth("slack-socket", "Slack 实时推送", 60, error);
+
 // 一次连接的生命周期；Slack 每隔几小时会主动要求重连，断开后由外层循环重连
 async function connectOnce(): Promise<void> {
 	const ws = new WebSocket(await openUrl());
 	const { promise: closed, resolve } = Promise.withResolvers<void>();
+	let alive = Date.now();
+	const seen = () => {
+		alive = Date.now();
+	};
 	ws.onmessage = m => {
+		seen();
 		const msg: Envelope = JSON.parse(String(m.data));
 		if (msg.envelope_id) ws.send(JSON.stringify({ envelope_id: msg.envelope_id })); // 不确认 Slack 会重发
-		if (msg.type === "hello") log("connected");
-		else if (msg.type === "disconnect") {
+		if (msg.type === "hello") {
+			log("connected");
+			health();
+		} else if (msg.type === "disconnect") {
 			log(`disconnect requested: ${msg.reason}`);
 			ws.close();
 		} else if (msg.type === "events_api" && msg.payload?.event) {
 			handle(msg.payload.event).catch(err => log(`handle failed: ${err}`));
 		}
 	};
+	ws.addEventListener("pong", () => {
+		seen();
+		health();
+	});
+	const beat = setInterval(() => {
+		if (Date.now() - alive > DEAD_MS) {
+			log(`no heartbeat for ${Math.round((Date.now() - alive) / 1000)}s: reconnecting`);
+			ws.terminate(); // 死连接上 close() 的握手等不到回应
+			resolve();
+		} else if (ws.readyState === WebSocket.OPEN) ws.ping();
+	}, PING_MS);
 	ws.onclose = () => resolve();
 	ws.onerror = () => log("websocket error");
 	await closed;
+	clearInterval(beat);
 }
 
 for (;;) {
@@ -84,6 +111,7 @@ for (;;) {
 		await connectOnce();
 	} catch (err) {
 		log(`connect failed: ${err}`);
+		health(String(err));
 		await Bun.sleep(10_000);
 	}
 	await Bun.sleep(1000);

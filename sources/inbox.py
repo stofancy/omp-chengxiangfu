@@ -54,3 +54,29 @@ def save_state(name, value):
     tmp = STATE / f".{name}.tmp"
     tmp.write_text(json.dumps(value, ensure_ascii=False, indent=1))
     os.replace(tmp, STATE / name)
+
+
+def watch_plan():
+    """插件写的：未完成任务登记的、读得到的盯办项（Slack 的频道和 thread、PR）。没有插件在跑时可能是旧的或没有。"""
+    return load_state("watch.json", {})
+
+
+def health(key, label, every_s, error=None, partial=False):
+    """记一笔这个程序的工作状态，插件据此判断它是不是还在正常工作。
+
+    成功时记下时间并清掉上次的错；失败时保留上次成功的时间。partial：跑完了但有一部分没读到，时间照记、错也留着。
+    every_s 是正常情况下多久成功一次。
+    """
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    prev = load_state(f"health/{key}.json", {})
+    rec = {"label": label, "every_s": every_s}
+    if error is None or partial:
+        rec["ok_at"] = now
+    elif prev.get("ok_at"):
+        rec["ok_at"] = prev["ok_at"]
+    if error is not None:
+        rec.update(error=str(error)[:300], error_at=now, error_since=prev.get("error_since") or now)
+    (STATE / "health").mkdir(parents=True, exist_ok=True)
+    tmp = STATE / "health" / f".{key}.json.tmp"
+    tmp.write_text(json.dumps(rec, ensure_ascii=False))
+    os.replace(tmp, STATE / "health" / f"{key}.json")

@@ -189,6 +189,7 @@ export function taskOfAgent(l: Table, name: string): Task | undefined {
 // 审查者的名字是「负责 agent 的名字 + Review」，再审时后面加序号（Proj123Review、Proj123Review2；同名重派时 omp 会加成 Proj123Review-2）。
 // 所以负责 agent 的名字不能长成这样
 const REVIEWER_NAME = /^(.+)Review\d*(?:-\d+)?$/;
+export const ownerOfReviewer = (name: string): string | undefined => REVIEWER_NAME.exec(name)?.[1];
 export const isReviewerName = (name: string) => REVIEWER_NAME.test(name);
 
 // 这个子代理是哪个未完成任务的审查者：主会话派出的（一层，名字里没有点）、名字对得上、自己又不是哪个任务的负责 agent

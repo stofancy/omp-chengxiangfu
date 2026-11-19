@@ -55,3 +55,19 @@ test("登记提问时列给模型看的：这个任务已有的决定和别的�
 	expect(text).not.toContain("刚登记的");
 	expect(decidedFor(l, "C", 0)).toBe("");
 });
+
+test("摘要里：坏了的接收程序分两段，新出现的让模型说一次、说过的叫它别重复；任务有几项没人盯写在任务那一行；在跑的 agent 带着跑了多久", () => {
+	const l = foldEvents([ev(0, "task", "A", { agent: "TaskA", done_when: "x", watch_add: ["OPS-1", "https://github.com/o/r/pull/1"] })]);
+	const text = snapshot(['TaskA (A, running 16 min, last step "Waiting for upload" since 3 min ago)'], l, {
+		faults: [
+			{ text: "Slack 实时推送已 15 小时没正常工作", fresh: true },
+			{ text: "提醒有一部分一直读不到（x）", fresh: false },
+		],
+		unobserved: watch => watch.filter(w => !w.startsWith("http")).length,
+	});
+	expect(text).toContain("(NEW: tell the operator once, in your next reply; do not try to fix them):\n- Slack 实时推送已 15 小时没正常工作\nReceivers still not working");
+	expect(text).toContain("do not repeat it, except when you say you are waiting for something that arrives through one of them):\n- 提醒有一部分一直读不到（x）");
+	expect(text).toContain("| watching 2 (1 of them no source can observe) |");
+	expect(text).toContain('Agents running (1): TaskA (A, running 16 min, last step "Waiting for upload" since 3 min ago)');
+	expect(snapshot([], l)).not.toContain("Receivers");
+});

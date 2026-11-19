@@ -77,3 +77,65 @@ export function matchTask(msg: Message, tasks: Watching[]): Match {
 	}
 	return { task: hits.length === 1 ? hits[0] : undefined, candidates: hits.length > 1 ? hits : [] };
 }
+
+// ---------- 盯办项由哪个接收程序去读 ----------
+// 登记在任务上的链接不只用来归位：接收程序照这份清单定监听范围（否则只有配置里写死的频道和自己开的 PR 有消息）。
+
+export type Target =
+	| { kind: "slack"; channel: string; thread?: string } // thread 是那条消息的 ts；没有就是整个频道或私信
+	| { kind: "github"; repo: string; number: number }
+	| { kind: "ado"; org: string; project: string; repo: string; id: number }
+	| { kind: "none" }; // 工单号、别的链接、随手写的说明：没有程序读得到
+
+const GITHUB_PARTS = /^https?:\/\/(?:www\.)?github\.com\/([^/?#\s]+\/[^/?#\s]+)\/pull\/(\d+)(?:[/?#]|$)/i;
+const ADO_PARTS = /^https?:\/\/dev\.azure\.com\/([^/?#\s]+)\/([^/?#\s]+)\/_git\/([^/?#\s]+)\/pullrequest\/(\d+)(?:[/?#]|$)/i;
+
+export function targetOf(entry: string): Target {
+	const url = entry.trim();
+	const slack = SLACK.exec(url);
+	if (slack) {
+		const thread = /[?&]thread_ts=(\d+\.\d+)/.exec(url)?.[1] ?? (slack[2] ? `${slack[2].slice(0, 10)}.${slack[2].slice(10)}` : undefined);
+		return { kind: "slack", channel: slack[1], thread };
+	}
+	const gh = GITHUB_PARTS.exec(url);
+	if (gh) return { kind: "github", repo: gh[1], number: Number(gh[2]) };
+	const ado = ADO_PARTS.exec(url);
+	if (ado) return { kind: "ado", org: decode(ado[1]), project: decode(ado[2]), repo: decode(ado[3]), id: Number(ado[4]) };
+	return { kind: "none" };
+}
+
+// 本机配了哪些接收程序（config.json）：Slack 要配了才有；Azure DevOps 只读配置的那个组织；GitHub 的 PR 轮询不用配置
+export interface Sources { slack: boolean; ado?: string }
+
+// 这一项有没有接收程序在读。读不到的仍然用来把从别处进来的消息归到任务
+export function observed(entry: string, s: Sources): boolean {
+	const t = targetOf(entry);
+	if (t.kind === "slack") return s.slack;
+	if (t.kind === "ado") return !!s.ado && s.ado.toLowerCase() === t.org.toLowerCase();
+	return t.kind === "github";
+}
+
+export interface WatchPlan {
+	slack: Array<{ task: string; channel: string; thread?: string }>;
+	github: Array<{ task: string; repo: string; number: number }>;
+	ado: Array<{ task: string; project: string; repo: string; id: number }>;
+}
+
+// 未完成任务登记的、读得到的盯办项，去重后交给接收程序。同一项登记在两个任务上只留一条：归哪个任务由归位规则另行判断
+export function watchPlan(tasks: Watching[], s: Sources): WatchPlan {
+	const plan: WatchPlan = { slack: [], github: [], ado: [] };
+	const seen = new Set<string>();
+	for (const t of tasks) {
+		for (const entry of t.watch) {
+			if (!observed(entry, s)) continue;
+			const target = targetOf(entry);
+			const key = JSON.stringify(target).toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			if (target.kind === "slack") plan.slack.push({ task: t.name, channel: target.channel, thread: target.thread });
+			else if (target.kind === "github") plan.github.push({ task: t.name, repo: target.repo, number: target.number });
+			else if (target.kind === "ado") plan.ado.push({ task: t.name, project: target.project, repo: target.repo, id: target.id });
+		}
+	}
+	return plan;
+}

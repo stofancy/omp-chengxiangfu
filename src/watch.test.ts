@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { matchTask } from "./watch";
+import { matchTask, observed, watchPlan } from "./watch";
 
 const ROOT = "https://acme.slack.com/archives/C111/p1700000000000100";
 const REPLY = "https://acme.slack.com/archives/C111/p1700000555000200?thread_ts=1700000000.000100";
@@ -47,4 +47,32 @@ test("命中几个任务：thread 级压过频道级；同一级仍然几个就�
 	expect(matchTask({ link: REPLY }, tasks)).toEqual({ task: "这条 thread", candidates: [] });
 	expect(matchTask({ link: REPLY }, [...tasks, { name: "也盯这条", watch: [REPLY] }])).toEqual({ task: undefined, candidates: ["这条 thread", "也盯这条"] });
 	expect(matchTask({ link: "https://nowhere.example/x" }, tasks)).toEqual({ task: undefined, candidates: [] });
+});
+
+test("哪些盯办项有接收程序在读：Slack 的链接（配了 Slack 才算）、GitHub 的 PR、配置的那个 Azure DevOps 组织的 PR；工单号、别的链接、随手写的说明都没有", () => {
+	const all = { slack: true, ado: "acme" };
+	expect(observed("https://acme.slack.com/archives/D0AAAAAAAAA", all)).toBe(true);
+	expect(observed("https://acme.slack.com/archives/C0BBBBBBBBB/p1700000123000400", all)).toBe(true);
+	expect(observed("https://acme.slack.com/archives/C0BBBBBBBBB/p1700000123000400", { slack: false })).toBe(false);
+	expect(observed("https://github.com/o/r/pull/37", { slack: false })).toBe(true);
+	expect(observed("https://dev.azure.com/acme/Proj/_git/repo/pullrequest/12", all)).toBe(true);
+	expect(observed("https://dev.azure.com/other/Proj/_git/repo/pullrequest/12", all)).toBe(false);
+	expect(observed("https://dev.azure.com/acme/Proj/_git/repo/pullrequest/12", { slack: true })).toBe(false);
+	for (const blind of ["OPS-42", "https://acme.atlassian.net/browse/PROJ-42", "slack:D0AAAAAAAAA (和某人的私信)", "https://github.com/o/r/issues/5"]) expect(observed(blind, all)).toBe(false);
+});
+
+test("交给接收程序的清单：频道和私信整个读，thread 带上那条消息的时间戳，PR 拆成仓库和编号；读不到的不进清单，同一项只留一条", () => {
+	const plan = watchPlan(
+		[
+			{ name: "A", watch: ["https://acme.slack.com/archives/D0AAAAAAAAA", "https://acme.slack.com/archives/C0BBBBBBBBB/p1700000123000400", "OPS-42", "https://github.com/O/R/pull/37#issuecomment-1"] },
+			{ name: "B", watch: ["https://acme.slack.com/archives/C0BBBBBBBBB/p1700000123999999?thread_ts=1700000123.000400", "https://github.com/o/r/pull/37", "https://dev.azure.com/acme/My%20Proj/_git/repo/pullrequest/12?_a=files"] },
+		],
+		{ slack: true, ado: "acme" },
+	);
+	expect(plan.slack).toEqual([
+		{ task: "A", channel: "D0AAAAAAAAA", thread: undefined },
+		{ task: "A", channel: "C0BBBBBBBBB", thread: "1700000123.000400" },
+	]);
+	expect(plan.github).toEqual([{ task: "A", repo: "O/R", number: 37 }]);
+	expect(plan.ado).toEqual([{ task: "B", project: "My Proj", repo: "repo", id: 12 }]);
 });
