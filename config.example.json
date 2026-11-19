@@ -7,9 +7,11 @@
     "user_token": { "file": "~/.config/slack/credentials.json", "json_key": "token" },
     "app_token": { "file": "~/.config/slack/app-token" },
     "channels": {
-      "C0123456789": { "name": "#some-project", "line": "PROJ-123" }
+      "C0123456789": { "name": "#some-project", "line": "PROJ-123" },
+      "C0987654321": { "name": "#team" }
     }
   },
+  "triage": { "about": "Your Name (as shown in chat), and what your team works on", "model": "pi/smol" },
   "ado": { "org": "your-ado-org" },
   "reminders": { "file": "~/.config/reminders.json", "line": "日常" }
 }

@@ -1,7 +1,7 @@
 // 给人看的 Markdown 视图（tasks/views/），以及每次请求注入的任务表摘要和任务卡。都由程序生成。
 import { join } from "node:path";
 import { TASKS } from "./paths";
-import { type Ev, GENERAL, type Item, type Review, type Table, type Task, isDone, openItems, openTasks, readTable, today, writeAtomic } from "./table";
+import { type Correction, type Ev, GENERAL, type Item, type Review, type Table, type Task, isDone, openItems, openTasks, readTable, today, writeAtomic } from "./table";
 
 const SNAPSHOT_MAX = 4000; // 字符
 const RECENT_DECISIONS = 10;
@@ -40,6 +40,15 @@ function pairing(l: Table, a: Ev): string {
 	const near = l.decisions.filter(d => d.ts <= a.ts && (!a.line || d.line === a.line) && minutes(d) <= PAIR_WINDOW_MIN).slice(-2).reverse();
 	if (!near.length) return ` ← 之前 ${PAIR_WINDOW_MIN} 分钟内没有你对这个任务的决定`;
 	return ` ← 之前你的决定：${near.map(d => `${minutes(d)} 分钟前「${tail(String(d.text), 80)}」`).join("；")}`;
+}
+
+// 纠正走到了哪一步。规则提议登记成提问后，用户在屏幕上看得到，模型不用在回复里再提；提问答了，按回答写规则再关掉
+export function correctionLine(l: Table, k: Correction): string {
+	const head = `[${k.n}] (${k.line}) ${k.text}`;
+	if (k.ask === undefined) return `${head} — no rule proposed yet: call tasktable_correction action=record with n=${k.n} and the rule you propose`;
+	if (l.asks.has(k.ask)) return `${head} — rule proposed as question ${k.ask}; it is on the operator's screen, do not repeat it`;
+	const answer = l.decisions.findLast(d => d.n === k.ask);
+	return `${head} — question ${k.ask} is closed${answer ? `: ${tail(String(answer.text), 160)}` : ""}. If the operator agreed, write the rule into rules.md (replace a similar older line instead of adding one), then tasktable_correction close n=${k.n}; otherwise just close it`;
 }
 
 function describeAction(l: Table, ev: Ev, paired: boolean): string {
@@ -141,7 +150,7 @@ export function snapshot(running: string[], l: Table = readTable(), monitoring: 
 	const fresh = l.lastInput ? writes.filter(a => a.ts > (l.lastInput as string)).length : 0;
 	const shown = writes.slice(-Math.min(RECENT_WRITES, Math.max(5, fresh)));
 	if (shown.length) must.push("Remote writes recorded by the program (before redoing one, check its real state first):", ...shown.map(a => `- ${describeAction(l, a, false)}`));
-	if (l.corrections.size) must.push("Open corrections (propose a rule, then tasktable_correction close):", ...[...l.corrections.values()].map(k => `[${k.n}] (${k.line}) ${k.text}`));
+	if (l.corrections.size) must.push("Open corrections:", ...[...l.corrections.values()].map(k => `- ${correctionLine(l, k)}`));
 	if (running.length) must.push(`Agents running (${running.length}): ${running.join("; ")}`);
 	// 故障用户在屏幕上看得到：新出现的让模型说一次，说过的不重复
 	const unsaid = monitoring.faults?.filter(f => f.fresh) ?? [];

@@ -3,23 +3,23 @@
 // 派子代理、给子代理发消息、子代理再派人、续会话后叫醒子代理、看谁在跑，都是 omp 自带的，这里不重做。
 // 插件只补 omp 没有的：
 // - 一本全局的任务表（tasks/events.jsonl）：每个任务登记负责 agent 的名字（主会话用这个名字派出子代理，之后 agent://<名字> 就是它）和要盯的外部输入。
-// - 每次请求末尾附规则（不写进会话历史，压缩丢不掉）：主会话收调度规则、常设约束和任务表摘要；任务的负责 agent 收常设约束、负责 agent 的规矩和任务卡；任务的审查者收常设约束、审查规则和任务卡；其他子代理只收常设约束。
+// - 每次请求末尾附规则（不写进会话历史，压缩丢不掉）：主会话收调度规则、常设约束和任务表摘要；任务的负责 agent 收常设约束、负责 agent 的规矩和任务卡；任务的审查者收常设约束、审查规则和任务卡；其他子代理只收常设约束。插件自带的规则和代码一起在进程启动时读，用户自己的规则文件每次现读。
 // - 外部消息：会话外的程序写进 inbox/new；每 5 秒认领一次，按任务登记的「要盯的外部输入」归到任务，合成一条消息叫醒主会话，由它交给负责 agent。
 // - 按层定模型：派出任务的负责 agent 时由程序指定模型（默认跟主会话一样）；它再派的帮手照 omp 自己的配置。
-// - 审查：任务要记成「完成」，任务表里得先有主会话另派的审查者记下的「通过」；事项记完成不拦，审不审由主会话按大小定。
-// - 提问：登记提问时要写查过哪里，程序把这个任务已有的决定列给模型看。
-// - 看得见：每条回复上方画一行标头（回答、交出、交回、审查结果…），输入框上方固定显示等用户定的事、在跑的负责 agent、接收程序的故障。
+// - 审查：任务要记成「完成」，任务表里得先有主会话另派的审查者记下的「通过」；事项记完成不拦，审不审由主会话按大小定。审查者在跑时，提醒负责 agent 先别把这份结果往外发。
+// - 提问：登记提问时要写查过哪里，程序把这个任务已有的决定列给模型看。用户纠正后提议的规则也登记成提问。
+// - 看得见：每条回复上方画一行标头（回答、交出、交回、审查结果…），输入框上方固定显示等用户定的事、在跑的负责 agent、接收程序的故障、插件已更新待重启；状态栏数着接收程序拦下的无关消息。
 // - 不傻等：子代理写好了却被 omp 压着的交回由程序送达；子代理久未交回时叫醒主会话去看。
 // 远端写入自动记到任务表；给人看的视图里配上它之前用户最近的决定。除了审查那一条，不拦截任何操作。
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { holdHandback, releaseHandback } from "./agents";
 import { handbackKind } from "./heads";
-import { DISPATCH_RULES, HELD, HOME, INBOX_CLAIMED, INBOX_NEW, ORDERS, OWNER_RULES, REVIEW_RULES, USER_RULES } from "./paths";
+import { DISPATCH_RULES, HELD, HOME, INBOX_CLAIMED, INBOX_NEW, ORDERS, OWNER_RULES, REVIEW_RULES, TRIAGE_LOG, USER_RULES } from "./paths";
 import { remoteWrite } from "./remote";
 import { checkReply, feedback, renderRules, settings } from "./rules";
-import { createScreen, messageRow } from "./screen";
+import { createScreen, messageRow, readReviewing } from "./screen";
 import { OFF_MESSAGE, isOn, setOn } from "./switch";
 import { type Ev, GENERAL, type Table, agentTaken, append, doneBlocker, isReviewerName, logError, needsReview, openTasks, readTable, taskOfAgent, taskOfReviewer, today } from "./table";
 import { decidedFor, renderViews, since, snapshot, taskCard } from "./views";
@@ -74,6 +74,9 @@ const read = (path: string) => {
 		return "";
 	}
 };
+// 插件自带的规则和代码一起加载：同一个进程里两者版本一致（磁盘上更新了，固定区提示重启）。用户自己的规则文件每次现读
+const PROMPTS = { dispatch: read(DISPATCH_RULES), orders: read(ORDERS), owner: read(OWNER_RULES), review: read(REVIEW_RULES) };
+const clock = (ms: number) => new Date(ms).toLocaleTimeString("sv-SE").slice(0, 5);
 
 // 外部消息归到哪个任务：先按任务登记的「要盯的外部输入」；没命中再用消息源自带的归属（频道配置、PR 标题里的卡号），但只认任务表里未完成的任务
 function route(l: Table, ev: InboxFile): { task?: string; tag: string } {
@@ -136,13 +139,37 @@ export default function (pi: ExtensionAPI): void {
 	const record = (ev: Omit<Ev, "ts">) => {
 		append(ev);
 		renderViews();
-		if (ev.kind === "task") screen.writePlan(); // 盯办项或任务状态变了：接收程序的监听范围跟着变
+		if (ev.kind === "task" || ev.kind === "item") screen.writePlan(); // 盯办项、任务状态、事项变了：接收程序的监听范围和分拣用的任务清单跟着变
+	};
+
+	// 接收程序分拣时拦下的无关消息（明细在 state/triage.jsonl）：你上次发话以来的条数。文件或发话时间变了才重数
+	let dropped = { key: "", n: 0 };
+	const droppedSince = (since: string | undefined): number => {
+		let key: string;
+		try {
+			const st = statSync(TRIAGE_LOG);
+			key = `${st.size}:${st.mtimeMs}:${since ?? ""}`;
+		} catch {
+			return 0;
+		}
+		if (key === dropped.key) return dropped.n;
+		let n = 0;
+		for (const raw of read(TRIAGE_LOG).split("\n")) {
+			try {
+				const r = JSON.parse(raw) as { at?: string; category?: string };
+				if (r.category === "irrelevant" && (!since || String(r.at ?? "") > since)) n++;
+			} catch {}
+		}
+		dropped = { key, n };
+		return n;
 	};
 
 	const status = (ctx: Ctx): string => {
 		const l = readTable();
 		const parts = [`📋 任务 ${openTasks(l).length}`, `待你决定 ${l.asks.size}`, `在跑的 agent ${jobs(ctx).length}`, `新消息 ${inboxSinceInput}`];
 		if (urgentSinceInput) parts.push(`其中私信/@你 ${urgentSinceInput}`); // 都是你上次发话以来到的，发话后清零
+		const quiet = droppedSince(l.lastInput);
+		if (quiet) parts.push(`拦下无关 ${quiet}`);
 		return parts.join(" · ");
 	};
 	const showStatus = (ctx: Ctx) => ctx.ui.setStatus?.(STATUS_KEY, isOn(session) ? status(ctx) : undefined);
@@ -310,14 +337,14 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// 不常变的规则正文（调度规则、常设约束）。用户每次发话时放进系统提示词（见 before_agent_start），那里进缓存；
-	// 系统提示词里没有的那些请求（还没发过话就被外部消息叫醒、规则文件刚改过）照旧附在末尾
-	const stableRules = () => `<chengxiangfu-rules data_dir="${HOME}">\n${renderRules(read(DISPATCH_RULES), settings())}</chengxiangfu-rules>\n<chengxiangfu-orders data_dir="${HOME}">\n${read(ORDERS)}</chengxiangfu-orders>\n`;
+	// 系统提示词里没有的那些请求（还没发过话就被外部消息叫醒、config.json 里的规则参数刚改过）照旧附在末尾
+	const stableRules = () => `<chengxiangfu-rules data_dir="${HOME}">\n${renderRules(PROMPTS.dispatch, settings())}</chengxiangfu-rules>\n<chengxiangfu-orders data_dir="${HOME}">\n${PROMPTS.orders}</chengxiangfu-orders>\n`;
 	const inSystemPrompt = (ctx: Ctx, text: string) => {
 		const system = ctx.getSystemPrompt?.();
 		return (Array.isArray(system) ? system : [system]).some(s => typeof s === "string" && s.includes(text));
 	};
 
-	// 规则文件每次现读：改了立即生效，也不怕压缩
+	// 规则每次请求都附在末尾（不写进会话历史），压缩丢不掉
 	pi.on("context", async (e: { messages: unknown[] }, ctx: Ctx) => {
 		if (!on(ctx)) {
 			// 刚关掉、用户还没再发话：上一次发话时接进系统提示词的规则还在，告诉模型不用管
@@ -327,7 +354,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 		// 注入的是 user 角色，模型容易当成用户贴来的：开头说明来源
 		const preface = "[Injected by the chengxiangfu plugin on every request. Standing instructions, not a message from the operator; never say the operator pasted or sent them.]\n";
-		const orders = `<chengxiangfu-orders data_dir="${HOME}">\n${read(ORDERS)}</chengxiangfu-orders>\n`;
+		const orders = `<chengxiangfu-orders data_dir="${HOME}">\n${PROMPTS.orders}</chengxiangfu-orders>\n`;
 		let text = preface + orders;
 		if (isMain(ctx)) {
 			screen.context(e.messages);
@@ -343,8 +370,14 @@ export default function (pi: ExtensionAPI): void {
 			const l = readTable();
 			const owned = id && !id.includes(".") ? taskOfAgent(l, id) : undefined;
 			const reviewed = taskOfReviewer(l, id);
-			if (owned) text += `<chengxiangfu-owner-rules>\n${renderRules(read(OWNER_RULES), settings())}</chengxiangfu-owner-rules>\n${taskCard(owned)}`;
-			if (reviewed) text += `<chengxiangfu-review-rules>\n${read(REVIEW_RULES)}</chengxiangfu-review-rules>\n${taskCard(reviewed)}`;
+			if (owned) {
+				text += `<chengxiangfu-owner-rules>\n${renderRules(PROMPTS.owner, settings())}</chengxiangfu-owner-rules>\n${taskCard(owned)}`;
+				// 主会话派出的审查者还在跑：这份结果先别往外发，免得审查不通过还得再去更正
+				const r = readReviewing(sessionOf(ctx))[owned.name];
+				if (r)
+					text += `\n<review-running>${r.by} has been reviewing your work on ${owned.name} since ${clock(r.since)}. Until its verdict is in, do not send this work's results, status reports, boards or summaries to anyone outside this session (Slack, PR or ticket comments, email); prepare them and send after the verdict. Answering a collaborator's direct question is fine if you say the result is still under review.</review-running>`;
+			}
+			if (reviewed) text += `<chengxiangfu-review-rules>\n${PROMPTS.review}</chengxiangfu-review-rules>\n${taskCard(reviewed)}`;
 		}
 		return { messages: [...e.messages, { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }] };
 	});
@@ -560,26 +593,39 @@ export default function (pi: ExtensionAPI): void {
 		name: "tasktable_correction",
 		label: "Task table correction",
 		description:
-			"action=record: the operator corrected you; record what was wrong in their terms and get a number back. Then propose in your report one rule line for <data_dir>/rules.md that would prevent it. action=close with n: after the operator agreed (and you wrote the rule) or declined. Open corrections stay in the task table context until closed.",
+			"action=record: the operator corrected you. Record what was wrong in their terms, together with the one rule line you propose for <data_dir>/rules.md that would prevent it. The program registers the proposal as a question to the operator; put it to them once, in this reply, as that numbered question. After that it stays on their screen with the other open questions: do not repeat it. To propose a rule for an open correction recorded without one, pass its n instead of text. Once the operator has answered: if they agreed, write the rule (replace a similar older line instead of adding one), then action=close with n; if they declined, just close it.",
 		parameters: z.object({
 			action: z.enum(["record", "close"]),
 			task: z.string().optional().describe(`Task name; defaults to ${GENERAL}.`),
 			text: z.string().optional().describe("record: what was corrected, quoting the operator where possible."),
-			n: z.number().optional().describe("close: correction number."),
+			rule: z.string().optional().describe("record: the rule line you propose, one sentence in the operator's language."),
+			n: z.number().optional().describe("record: an open correction that has no rule proposed yet. close: correction number."),
 			outcome: z.string().optional().describe("close: rule written, or declined."),
 		}),
-		async execute(_id: string, p: { action: "record" | "close"; task?: string; text?: string; n?: number; outcome?: string }, _signal: unknown, _onUpdate: unknown, ctx: Ctx) {
+		async execute(_id: string, p: { action: "record" | "close"; task?: string; text?: string; rule?: string; n?: number; outcome?: string }, _signal: unknown, _onUpdate: unknown, ctx: Ctx) {
 			const s = sidOf(ctx);
-			const line = taskOr(p.task);
+			const l = readTable();
 			if (p.action === "close") {
-				if (p.n === undefined || !readTable().corrections.has(p.n)) throw new Error(`no open correction ${p.n}`);
-				record({ sid: s, kind: "correction_close", line, n: p.n, outcome: p.outcome ?? "" });
-				return { content: [{ type: "text", text: `closed correction ${p.n}` }] };
+				const k = p.n === undefined ? undefined : l.corrections.get(p.n);
+				if (!k) throw new Error(`no open correction ${p.n}`);
+				record({ sid: s, kind: "correction_close", line: k.line, n: k.n, outcome: p.outcome ?? "" });
+				// 用户用一句话答的（不是只回编号）、或者模型先写了规则：规则提议那个提问还开着，跟着一起关，不留在用户屏幕上
+				if (k.ask !== undefined && l.asks.has(k.ask)) record({ sid: s, kind: "ask_close", line: k.line, n: k.ask, outcome: p.outcome ?? "", by: "model" });
+				return { content: [{ type: "text", text: `closed correction ${k.n}` }] };
 			}
-			if (!p.text) throw new Error("text is required");
-			const n = readTable().lastCorrection + 1;
-			record({ sid: s, kind: "correction", line, n, text: p.text });
-			return { content: [{ type: "text", text: `correction number ${n}` }] };
+			const rule = p.rule?.trim();
+			if (!rule) throw new Error("rule is required: the one rule line you propose for rules.md");
+			const old = p.n === undefined ? undefined : l.corrections.get(p.n);
+			if (p.n !== undefined && !old) throw new Error(`no open correction ${p.n}`);
+			if (old?.ask !== undefined && l.asks.has(old.ask)) throw new Error(`correction ${old.n} already has its rule proposal open as question ${old.ask}`);
+			const text = old?.text ?? p.text?.trim();
+			if (!text) throw new Error("text is required");
+			const line = old?.line ?? taskOr(p.task);
+			const n = old?.n ?? l.lastCorrection + 1;
+			const ask = l.lastAsk + 1;
+			record({ sid: s, kind: "correction", line, n, text, rule, ask });
+			record({ sid: s, kind: "ask", line, n: ask, text: `规则提议：${rule}（同意 / 不同意）`, checked: `operator correction: ${text}` });
+			return { content: [{ type: "text", text: `correction number ${n}; the rule proposal is question ${ask}. Put it to the operator once in this reply as question ${ask}; after that it stays on their screen, do not repeat it.` }] };
 		},
 	};
 

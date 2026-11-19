@@ -1,15 +1,17 @@
-"""定时补读（建议每 10 分钟）：给 slack_socket.ts 兜底，把推送断线期间漏掉的、别人发的新消息写成外部消息。只读 Slack。
+"""定时补读（建议每 5 分钟）：给 slack_socket.ts 兜底，把推送断线期间漏掉的、别人发的新消息写成外部消息。只读 Slack。
 
 读哪些地方：config.json 里 slack.channels 的频道，加上未完成任务登记要盯的频道、私信和 thread（插件写在 state/watch.json）。
 一个地方第一次读只记下当前位置，不回放历史。私信和 @ 到你的消息标为紧急。同一条消息推送已经写过的不会重复。
+配置里没归到任务（没写 line）的频道，配了 triage 时不紧急的消息先分拣：无关的只记进 state/triage.jsonl，不送；推送把这类消息留给这里。
 """
 import json
+import re
 import sys
 import time
 import urllib.parse
 import urllib.request
 
-from inbox import CONFIG, health, load_state, read_secret, save_state, watch_plan, write_event
+from inbox import CONFIG, TRIAGE, health, load_state, log_triage, read_secret, save_state, seen, triage, watch_plan, write_event
 
 SLACK = CONFIG["slack"]
 ME = SLACK["me"]
@@ -46,6 +48,11 @@ def place_name(ch, users):
     return users[ch]
 
 
+def readable(text, users):
+    """把 <@U…> 换成人名：分拣的模型才知道说的是谁。"""
+    return re.sub(r"<@([A-Z0-9]+)>", lambda x: "@" + display_name(x.group(1), users), text or "")
+
+
 THREAD_WINDOW = 7 * 86400  # 整个频道在读时，只看最近 7 天发起的 thread 里的新回复；更早的 thread 要单独登记
 
 
@@ -68,30 +75,37 @@ def main():
     failed = []
     plan = watch_plan().get("slack", [])
     channels = dict(SLACK["channels"])
-    for w in plan:  # 任务登记的整个频道或私信：和配置里的频道一样读
-        if not w.get("thread") and w["channel"] not in channels:
+    for w in plan:  # 任务登记的整个频道或私信：和配置里的频道一样读。配置里没归到任务的频道被任务登记了，就算那个任务的，不再分拣
+        if w.get("thread"):
+            continue
+        if w["channel"] not in channels:
             channels[w["channel"]] = {"name": place_name(w["channel"], users), "line": w["task"]}
+        elif not channels[w["channel"]].get("line"):
+            channels[w["channel"]] = {**channels[w["channel"]], "line": w["task"]}
+    # 一个地方整个读完才收下它的消息：中途失败的游标不动、下次重读，读到一半的这次不处理，免得拦下的消息下次又分拣一遍
     for ch, meta in channels.items():
         if ch not in cursors:
             cursors[ch] = now  # 第一次只记位置
             continue
         cur = float(cursors[ch])
         newest = cur
+        got = []
         try:
             for m in history(ch, f"{cur - THREAD_WINDOW:.6f}"):
                 ts = float(m["ts"])
                 newest = max(newest, ts)
                 if ts > cur and m.get("user") != ME and m.get("subtype") in (None, "thread_broadcast"):
-                    found.append((ch, meta, m, None))
+                    got.append((ch, meta, m, None, None))
                 if float(m.get("latest_reply", 0)) > cur:
                     for r in api("conversations.replies", channel=ch, ts=m["ts"], oldest=cursors[ch], limit=200).get("messages", []):
                         rts = float(r["ts"])
                         newest = max(newest, rts)
                         if r["ts"] != m["ts"] and rts > cur and r.get("user") != ME:
-                            found.append((ch, meta, r, m["ts"]))
+                            got.append((ch, meta, r, m["ts"], m))
         except Exception as exc:  # 一个地方读不了不影响别的；它的游标不动，下次重读
             failed.append(f"{meta['name']}: {exc}")
             continue
+        found += got
         cursors[ch] = f"{newest:.6f}"
     for w in plan:  # 任务登记的单条 thread。所在频道已经整个在读也照读：早于 7 天的 thread 上面读不到，重复的写不进去
         if not w.get("thread"):
@@ -103,31 +117,64 @@ def main():
         cur = float(cursors[key])
         newest = cur
         meta = {"name": place_name(ch, users), "line": w["task"]}
+        got = []
         try:
             for r in api("conversations.replies", channel=ch, ts=parent, oldest=cursors[key], limit=200).get("messages", []):
                 rts = float(r["ts"])
                 newest = max(newest, rts)
                 if r["ts"] != parent and rts > cur and r.get("user") != ME:
-                    found.append((ch, meta, r, parent))
+                    got.append((ch, meta, r, parent, None))
         except Exception as exc:
             failed.append(f"thread in {meta['name']}: {exc}")
             continue
+        found += got
         cursors[key] = f"{newest:.6f}"
-    written = 0
-    for ch, meta, m, parent in sorted(found, key=lambda h: float(h[2]["ts"])):
-        link = f"https://{SLACK['domain']}.slack.com/archives/{ch}/p{m['ts'].replace('.', '')}" + (f"?thread_ts={parent}" if parent else "")
+    # 同一条消息可能两处都读到（整个频道在读，它所在的 thread 又单独登记了）：留归了任务的那份
+    unique = {}
+    for h in found:
+        k = (h[0], h[2]["ts"])
+        if k not in unique or (h[1].get("line") and not unique[k][1].get("line")):
+            unique[k] = h
+    pending = []
+    for ch, meta, m, parent, top in sorted(unique.values(), key=lambda h: float(h[2]["ts"])):
+        key = f"{ch}-{m['ts']}"
+        if seen("slack", key):
+            continue  # 推送已经写过
         urgent = ch.startswith("D") or f"<@{ME}>" in m.get("text", "")
-        where = meta["name"] + (" (thread reply)" if parent else "")
-        written += write_event("slack", display_name(m.get("user", "?"), users), where, link, line=None if urgent else meta.get("line"), urgent=urgent,
-                               key=f"{ch}-{m['ts']}", order_ns=int(float(m["ts"]) * 1e9))
+        pending.append({"key": key, "m": m, "top": top, "urgent": urgent, "line": None if urgent else meta.get("line"),
+                        "who": display_name(m.get("user", "?"), users), "where": meta["name"] + (" (thread reply)" if parent else ""),
+                        "link": f"https://{SLACK['domain']}.slack.com/archives/{ch}/p{m['ts'].replace('.', '')}" + (f"?thread_ts={parent}" if parent else "")})
+    # 配置里没归到任务的频道：不紧急的先分拣（配了 triage 段就算开，空的也算，和推送那边一致）。分拣不了就全部送，宁可多打扰也不漏
+    sort = [e for e in pending if TRIAGE is not None and not e["urgent"] and not e["line"]]
+    if sort:
+        items = [{"who": e["who"], "where": e["where"], "text": readable(e["m"].get("text"), users)[:800],
+                  **({"thread": f"{display_name(e['top'].get('user', '?'), users)}: {readable(e['top'].get('text'), users)[:300]}"} if e["top"] else {})} for e in sort]
+        try:
+            for e, (category, task, summary) in zip(sort, triage(items, watch_plan().get("tasks", []))):
+                e.update(category=category, task=task, summary=summary)
+        except Exception as exc:
+            failed.append(f"triage failed, sent everything: {exc}")
+            for e in sort:
+                e.update(category="unsorted", task=None, summary="")
+        log_triage([{k: e[k] for k in ("category", "task", "who", "where", "link", "summary")} for e in sort])
+    # 分拣说归某个任务也只写进说明，不替主会话定归属：猜错了会反复叫醒那个任务的负责 agent
+    written = 0
+    for e in pending:
+        if e.get("category") == "irrelevant":
+            continue
+        note = {"task": f"triage: may belong to {e.get('task')}", "relevant": "triage: relevant to the operator or the team", "unsure": "triage: unsure",
+                "unsorted": "triage failed, not sorted"}.get(e.get("category"))
+        written += write_event("slack", e["who"], e["where"], e["link"], line=e["line"], note=note, urgent=e["urgent"],
+                               key=e["key"], order_ns=int(float(e["m"]["ts"]) * 1e9))
     # 不再登记的地方把游标丢掉：以后重新登记时从那一刻读起，不回放中间这段。配置里的频道一直留着
     live = set(channels) | {f"{w['channel']}:{w['thread']}" for w in plan if w.get("thread")}
     cursors = {k: v for k, v in cursors.items() if k in live}
     # 游标在消息写完之后才保存：中途失败下次会重读，宁可重复不丢
     save_state("slack-users.json", users)
     save_state("slack-cursor.json", cursors)
-    if written:
-        print(f"{time.strftime('%F %T')} backfilled {written} missed by the socket")
+    dropped = sum(e.get("category") == "irrelevant" for e in pending)
+    if written or dropped:
+        print(f"{time.strftime('%F %T')} wrote {written}, dropped {dropped} as irrelevant")
     return failed
 
 
@@ -135,10 +182,10 @@ if __name__ == "__main__":
     try:
         failed = main()
     except Exception as exc:
-        health("slack-poll", "Slack 定时补读", 600, error=exc)
+        health("slack-poll", "Slack 定时补读", 300, error=exc)
         print(f"{time.strftime('%F %T')} slack poll failed: {exc}", file=sys.stderr)
         sys.exit(1)
-    health("slack-poll", "Slack 定时补读", 600, error="; ".join(failed) if failed else None, partial=True)
+    health("slack-poll", "Slack 定时补读", 300, error="; ".join(failed) if failed else None, partial=True)
     if failed:
-        print(f"{time.strftime('%F %T')} slack poll: some places could not be read: {'; '.join(failed)}", file=sys.stderr)
+        print(f"{time.strftime('%F %T')} slack poll: {'; '.join(failed)}", file=sys.stderr)
         sys.exit(1)

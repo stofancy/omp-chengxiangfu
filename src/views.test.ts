@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { foldEvents } from "./table";
-import { decidedFor, renderTask, snapshot } from "./views";
+import { correctionLine, decidedFor, renderTask, snapshot } from "./views";
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 18, 1, minute)).toISOString();
 const ev = (minute: number, kind: string, line: string | undefined, extra: Record<string, unknown> = {}) => JSON.stringify({ ts: at(minute), sid: "s", kind, line, ...extra });
@@ -70,4 +70,22 @@ test("摘要里：坏了的接收程序分两段，新出现的让模型说一�
 	expect(text).toContain("| watching 2 (1 of them no source can observe) |");
 	expect(text).toContain('Agents running (1): TaskA (A, running 16 min, last step "Waiting for upload" since 3 min ago)');
 	expect(snapshot([], l)).not.toContain("Receivers");
+});
+
+test("纠正走到哪一步，摘要里就说哪一步：规则提议还在等用户时叫模型别重复；用户答了让它按回答写规则再关；旧的没提议过的叫它补一个提议", () => {
+	const l = foldEvents([
+		ev(0, "correction", "A", { n: 1, text: "旧纠正" }),
+		ev(1, "correction", "A", { n: 2, text: "别把测试时限当成发消息的时间", rule: "时限只管做事", ask: 5 }),
+		ev(1, "ask", "A", { n: 5, text: "规则提议：时限只管做事（同意 / 不同意）" }),
+		ev(2, "correction", "A", { n: 3, text: "草稿太正式", rule: "草稿写成口语", ask: 6 }),
+		ev(2, "ask", "A", { n: 6, text: "规则提议：草稿写成口语（同意 / 不同意）" }),
+		ev(3, "decision", "A", { n: 6, text: "规则提议：草稿写成口语（同意 / 不同意） → 同意" }),
+		ev(3, "ask_close", "A", { n: 6, outcome: "同意", by: "operator" }),
+	]);
+	expect(correctionLine(l, l.corrections.get(1)!)).toContain("no rule proposed yet: call tasktable_correction action=record with n=1");
+	expect(correctionLine(l, l.corrections.get(2)!)).toContain("rule proposed as question 5; it is on the operator's screen, do not repeat it");
+	const answered = correctionLine(l, l.corrections.get(3)!);
+	expect(answered).toContain("question 6 is closed: 规则提议：草稿写成口语（同意 / 不同意） → 同意");
+	expect(answered).toContain("tasktable_correction close n=3");
+	expect(snapshot([], l)).toContain("Open corrections:\n- [1] (A) 旧纠正");
 });

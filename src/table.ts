@@ -10,6 +10,7 @@ export type Ev = { ts: string; sid: string; kind: string; line?: string; [k: str
 export interface Review { verdict: "pass" | "fail"; by: string; at: string; evidence: string; findings: string }
 export interface Item { line: string; id: string; title: string; status: string; next?: string; chase?: string; pr?: string; source?: string; updated: string; review?: Review }
 export interface Ask { n: number; line: string; text: string; opened: string }
+export interface Correction extends Ask { rule?: string; ask?: number } // ask：规则提议登记成的那个提问的编号
 export interface Task {
 	name: string;
 	recorded: boolean; // 有 task 事件；false = 只有事项的旧任务
@@ -27,7 +28,7 @@ export interface Table {
 	items: Map<string, Map<string, Item>>; // 任务 → 事项号 → 事项
 	asks: Map<number, Ask>; // 待用户决定
 	lastAsk: number; // 编号只增不复用：迟到的「1 做」不会落到别的问题上
-	corrections: Map<number, Ask>; // 用户的纠正，还没决定要不要写成规则
+	corrections: Map<number, Correction>; // 用户的纠正，还没决定要不要写成规则
 	lastCorrection: number;
 	decisions: Ev[];
 	actions: Ev[];
@@ -136,7 +137,7 @@ function fold(l: Table, ev: Ev): void {
 			l.lastReply = ev.ts;
 			break;
 		case "correction":
-			l.corrections.set(Number(ev.n), { n: Number(ev.n), line, text: String(ev.text), opened: ev.ts });
+			l.corrections.set(Number(ev.n), { n: Number(ev.n), line, text: String(ev.text), opened: ev.ts, ...(typeof ev.rule === "string" ? { rule: ev.rule } : {}), ...(typeof ev.ask === "number" ? { ask: ev.ask } : {}) });
 			l.lastCorrection = Math.max(l.lastCorrection, Number(ev.n));
 			break;
 		case "correction_close":

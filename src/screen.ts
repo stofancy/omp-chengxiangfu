@@ -1,15 +1,17 @@
 // 屏幕上给用户看的东西，和主会话自己看不到的子代理状态：
 // - 每条回复上方的标头（heads.ts 出文字，这里记住哪条回复画哪一行）；
-// - 输入框上方的固定区：等用户定的事、在跑的负责 agent、接收程序的故障；
-// - 子代理写好了却被 omp 压着的交回、久未交回的子代理：由这里叫醒主会话（agents.ts）。
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+// - 输入框上方的固定区：等用户定的事、在跑的负责 agent、接收程序的故障、插件已更新待重启；
+// - 子代理写好了却被 omp 压着的交回、久未交回的子代理：由这里叫醒主会话（agents.ts）；
+// - 哪些任务正在被审查：写给负责 agent 那一侧，审查出结论前先不把结果发出去。
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Step, dueHandbacks, lastStep } from "./agents";
 import { type Trigger, headLabel, headLine, rowFor, tailTriggers } from "./heads";
 import { type Fault, faults, readHealth } from "./health";
-import { CONFIG, HEADS, HELD, WATCH_PLAN } from "./paths";
+import { CONFIG, HEADS, HELD, PLUGIN_ROOT, REVIEWING, WATCH_PLAN } from "./paths";
 import { settings } from "./rules";
-import { type Table, logError, openTasks, ownerOfReviewer, readTable, writeAtomic } from "./table";
+import { type Table, logError, openItems, openTasks, ownerOfReviewer, readTable, taskOfReviewer, writeAtomic } from "./table";
 import type { Monitoring } from "./views";
 import { type Sources, observed, watchPlan } from "./watch";
 
@@ -17,6 +19,39 @@ const WIDGET_KEY = "chengxiangfu";
 const HELD_GRACE_MS = 15_000; // 子代理写完交回后这么久 omp 还没送，就由程序送
 const HEADS_KEPT = 400;
 const ASKS_SHOWN = 4;
+const STAMP_EVERY_MS = 60_000;
+
+// 插件自己的代码和自带的规则算一个指纹（测试文件不算）。进程启动时记下；之后对不上，就是磁盘上的插件已经更新、这个进程还在跑旧的
+export function codeStamp(root = PLUGIN_ROOT): string {
+	const hash = createHash("sha1");
+	for (const dir of ["src", "prompts"]) {
+		let names: string[] = [];
+		try {
+			names = readdirSync(join(root, dir))
+				.filter((n: string) => /\.(ts|md)$/.test(n) && !n.endsWith(".test.ts"))
+				.sort();
+		} catch {}
+		for (const n of names) {
+			hash.update(`${dir}/${n}\0`);
+			try {
+				hash.update(readFileSync(join(root, dir, n)));
+			} catch {}
+		}
+	}
+	return hash.digest("hex");
+}
+const LOADED = codeStamp();
+
+// 主会话那一侧写、负责 agent 那一侧读：这个会话里哪些任务正在被审查（任务名 → 审查者、开始时间）
+export type Reviewing = Record<string, { by: string; since: number }>;
+export function readReviewing(session: string | undefined): Reviewing {
+	if (!session) return {};
+	try {
+		return JSON.parse(readFileSync(join(REVIEWING, `${session}.json`), "utf8")) as Reviewing;
+	} catch {
+		return {};
+	}
+}
 
 interface Job { id: string; type?: string; agentId?: string; startTime?: number }
 interface Ui {
@@ -138,6 +173,11 @@ export function createScreen(deps: ScreenDeps) {
 	const nextStall = new Map<string, number>(); // 任务的这一次运行 → 下一次到多少分钟提醒
 	const heldSent = new Map<string, number>(); // 子代理 → 程序替它送达的最近一条交回是什么时候写的
 
+	// ---------- 插件已更新待重启、正在被审查的任务 ----------
+	let stale = false;
+	let stampAt = 0;
+	let reviewingWritten: string | undefined;
+
 	let shown = "";
 	const widget = (ui: Ui, jobs: Job[]) => {
 		const l = readTable();
@@ -152,6 +192,7 @@ export function createScreen(deps: ScreenDeps) {
 		const busy = jobs.map(j => describe(l, j)).filter((s): s is string => !!s);
 		if (busy.length) lines.push(clipTo(`🏃 在跑：${busy.join("；")}`, max));
 		if (current.length) lines.push(clipTo(`⚠️ ${current.map(f => f.text).join("；")}`, max));
+		if (stale) lines.push("🔄 插件已更新：重启会话（omp -c）后生效");
 		const next = lines.join("\n");
 		if (next === shown) return;
 		shown = next;
@@ -233,12 +274,16 @@ export function createScreen(deps: ScreenDeps) {
 				return `${j.id}${[task, ran, doing].some(Boolean) ? ` (${[task, ran, doing].filter(Boolean).join(", ")})` : ""}`;
 			});
 		},
-		// 把未完成任务登记的、读得到的盯办项写给接收程序
+		// 把未完成任务登记的、读得到的盯办项写给接收程序；再附上任务的名字、标题、目标和没做完的事项，接收程序分拣消息时据此判断归不归某个任务
 		writePlan() {
 			try {
 				const l = readTable();
+				const open = openTasks(l);
+				const items = openItems(l).sort((a, b) => b.updated.localeCompare(a.updated)); // 最近动过的在前
+				const tasks = open.map(t => ({ name: t.name, title: t.title, goal: t.goal, items: items.filter(i => i.line === t.name).slice(0, 6).map(i => i.title) }));
+				const plan = { ...watchPlan(open.map(t => ({ name: t.name, watch: t.watch })), src), tasks };
 				mkdirSync(join(WATCH_PLAN, ".."), { recursive: true });
-				writeAtomic(WATCH_PLAN, JSON.stringify(watchPlan(openTasks(l).map(t => ({ name: t.name, watch: t.watch })), src), null, 1));
+				writeAtomic(WATCH_PLAN, JSON.stringify(plan, null, 1));
 			} catch (err) {
 				logError("watch plan", err);
 			}
@@ -301,11 +346,36 @@ export function createScreen(deps: ScreenDeps) {
 			for (const key of nextStall.keys()) if (!live.has(key)) nextStall.delete(key);
 			for (const agent of heldSent.keys()) if (!jobs.some(j => (j.agentId ?? j.id) === agent)) heldSent.delete(agent);
 
+			if (now - stampAt >= STAMP_EVERY_MS) {
+				stampAt = now;
+				stale = codeStamp() !== LOADED;
+			}
+			// 正在跑的审查者：写给负责 agent 那一侧，审查出结论前它先不把这份结果发出去（见 index.ts 的 context）
+			if (session) {
+				const reviewing: Reviewing = {};
+				for (const j of jobs) {
+					const agent = j.agentId ?? j.id;
+					const t = j.type === "task" ? taskOfReviewer(l, agent) : undefined;
+					if (t) reviewing[t.name] = { by: agent, since: j.startTime ?? now };
+				}
+				const next = JSON.stringify(reviewing);
+				if (next !== reviewingWritten) {
+					try {
+						mkdirSync(REVIEWING, { recursive: true });
+						writeAtomic(join(REVIEWING, `${session}.json`), next);
+						reviewingWritten = next;
+					} catch (err) {
+						logError("reviewing", err);
+					}
+				}
+			}
+
 			widget(ui, jobs);
 		},
-		// 关掉调度器模式：把固定区撤掉
+		// 关掉调度器模式、换了会话：把固定区撤掉；下一拍按这个会话重写审查状态
 		clear(ui: Ui) {
 			shown = "";
+			reviewingWritten = undefined;
 			ui.setWidget?.(WIDGET_KEY, undefined);
 		},
 	};

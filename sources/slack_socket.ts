@@ -3,6 +3,7 @@
 // 哪些消息算相关：config.json 里 slack.channels 列的频道；未完成任务登记要盯的频道、私信和 thread（state/watch.json）；
 // 发给你的私信和群聊私信；任何频道里 @ 到你的消息。
 // 私信和 @ 标为紧急（状态栏单独计数）。外部消息只写「谁、在哪、链接」，不写原文。
+// 配了 triage 时，配置里没归到任务（没写 line）的频道里不紧急的消息要先分拣：这里不写，留给 slack_poll.py（它读原文和 thread 的开头去分拣）。
 // 断线期间的事件 Slack 不会补发，由 slack_poll.py 定时补读关注的地方；两边写同一条消息只进一次。
 // 连接会悄悄死掉（切 VPN、机器休眠后进程和连接都还在，但再也收不到东西）：每 30 秒发一次心跳，90 秒没回音就重连。
 import { config, readSecret, slackWatch, writeEvent, writeHealth } from "./config";
@@ -44,6 +45,7 @@ async function handle(ev: SlackMessage): Promise<void> {
 	const watch = slackWatch();
 	const task = watch.channels.get(ev.channel) ?? watch.threads.get(`${ev.channel}:${ev.thread_ts ?? ev.ts}`);
 	if (!watched && !direct && !mention && !task) return;
+	if (watched && !watched.line && !direct && !mention && !task && config.triage) return;
 	const who = await lookup("users.info", "user", ev.user);
 	const reply = ev.thread_ts && ev.thread_ts !== ev.ts;
 	const place = watched?.name ?? (ev.channel_type === "im" ? `DM ${who}` : direct ? "group DM" : await lookup("conversations.info", "channel", ev.channel));

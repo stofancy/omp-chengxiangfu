@@ -8,7 +8,7 @@ const INBOX = join(HOME, "inbox");
 
 export interface Secret { file: string; json_key?: string }
 export interface SlackConfig { domain: string; me: string; user_token: Secret; app_token: Secret; channels: Record<string, { name: string; line?: string }> }
-export interface Config { slack?: SlackConfig }
+export interface Config { slack?: SlackConfig; triage?: { about?: string; model?: string; command?: string } }
 
 export const config: Config = JSON.parse(readFileSync(join(HOME, "config.json"), "utf8"));
 

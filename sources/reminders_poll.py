@@ -1,4 +1,4 @@
-"""定时检查（建议每 30 分钟）：提醒文件里到期、未完成的条目，每天写一次紧急的外部消息。
+"""定时检查（建议每 5 分钟：带时刻的提醒最多晚这么久）：提醒文件里到期、未完成的条目，每天写一次紧急的外部消息。
 
 提醒文件是 JSON 数组，每项 {"id", "text", "due", "done": bool, "until"?: ISO 时间}；
 due 是 "YYYY-MM-DD"（当天第一次检查就提醒）或带时刻的 "YYYY-MM-DD HH:MM"（本机时间，到点后的第一次检查提醒）。
@@ -55,10 +55,10 @@ if __name__ == "__main__":
     try:
         bad = main()
     except Exception as exc:
-        health("reminders", "提醒", 1800, error=exc)
+        health("reminders", "提醒", 300, error=exc)
         print(f"{time.strftime('%F %T')} reminders poll failed: {exc}", file=sys.stderr)
         sys.exit(1)
     # 写错的条目不会提醒：留在 error 里，让人看得见
-    health("reminders", "提醒", 1800, error=f"malformed entries skipped: {'; '.join(bad)}" if bad else None, partial=True)
+    health("reminders", "提醒", 300, error=f"malformed entries skipped: {'; '.join(bad)}" if bad else None, partial=True)
     if bad:
         print(f"{time.strftime('%F %T')} reminders: skipped malformed entries: {'; '.join(bad)}", file=sys.stderr)

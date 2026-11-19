@@ -14,7 +14,8 @@ export const USER_RULES = join(HOME, "rules.md"); // 用户自己的补充规则
 export const CONFIG = join(HOME, "config.json"); // 规则参数（rules 段）和外部事件源的配置
 export const DISPATCH_STATE = join(HOME, "state/dispatch"); // 调度器模式的开关：每个打开的主会话一个文件
 
-const prompt = (name: string) => fileURLToPath(new URL(`../prompts/${name}`, import.meta.url));
+export const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url)); // 插件自己的目录：代码和自带的规则
+const prompt = (name: string) => join(PLUGIN_ROOT, "prompts", name);
 export const DISPATCH_RULES = prompt("调度规则.md");
 export const OWNER_RULES = prompt("负责人规则.md");
 export const REVIEW_RULES = prompt("审查规则.md");
@@ -23,3 +24,5 @@ export const HEALTH = join(HOME, "state/health"); // 每个接收程序一个文
 export const WATCH_PLAN = join(HOME, "state/watch.json"); // 未完成任务登记的、接收程序读得到的盯办项：补读和实时推送照它定范围
 export const HEADS = join(HOME, "state/heads"); // 每个会话一个文件：回复上方画过的标头，续会话时照原样画回去
 export const HELD = join(HOME, "state/held"); // 每个主会话一个目录：子代理写好了、omp 还压着没送的交回
+export const REVIEWING = join(HOME, "state/reviewing"); // 每个主会话一个文件：哪些任务正在被审查，负责 agent 据此先不把结果发出去
+export const TRIAGE_LOG = join(HOME, "state/triage.jsonl"); // 接收程序分拣过的消息：拦下的只记在这里，不进收件箱
