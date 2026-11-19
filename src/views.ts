@@ -30,21 +30,19 @@ function itemLine(i: Item): string {
 
 const taskHead = (t: Task) => `${t.name}${t.title ? ` ${t.title}` : ""} | owner ${t.agent ? `agent://${t.agent}` : "none"} | watching ${t.watch.length} | review ${verdict(t.review)}`;
 
-// 远端写入对账：这次写入之前 30 分钟内，用户对这个任务最近的决定（最多两条：批准之后用户可能又定了别的事）。
-// 程序只配对，对不对得上由读的人（主会话、用户）判断
-function pairing(l: Table, a: Ev, zh: boolean): string {
+// 远端写入对账，只放在任务视图里供人抽查：这次写入之前 30 分钟内，用户对这个任务最近的决定（最多两条）。
+// 不放进给模型的摘要：批准常常早于 30 分钟，配不上是常态，模型会在每次汇报里解释一遍
+function pairing(l: Table, a: Ev): string {
 	if (a.kind !== "action") return "";
 	const minutes = (d: Ev) => Math.round((Date.parse(a.ts) - Date.parse(d.ts)) / 60_000);
 	const near = l.decisions.filter(d => d.ts <= a.ts && (!a.line || d.line === a.line) && minutes(d) <= PAIR_WINDOW_MIN).slice(-2).reverse();
-	if (!near.length) return zh ? ` ← 之前 ${PAIR_WINDOW_MIN} 分钟内没有你对这个任务的决定` : ` ← NO operator decision on this task in the ${PAIR_WINDOW_MIN} min before`;
-	return zh
-		? ` ← 之前你的决定：${near.map(d => `${minutes(d)} 分钟前「${tail(String(d.text), 80)}」`).join("；")}`
-		: ` ← operator decisions before it: ${near.map(d => `${minutes(d)} min earlier "${tail(String(d.text), 80)}"`).join("; ")}`;
+	if (!near.length) return ` ← 之前 ${PAIR_WINDOW_MIN} 分钟内没有你对这个任务的决定`;
+	return ` ← 之前你的决定：${near.map(d => `${minutes(d)} 分钟前「${tail(String(d.text), 80)}」`).join("；")}`;
 }
 
-function describeAction(l: Table, ev: Ev, zh: boolean): string {
+function describeAction(l: Table, ev: Ev, paired: boolean): string {
 	if (ev.kind === "inbox") return `${when(ev.ts)} inbox ${ev.source}: ${ev.who ?? ""} @ ${ev.where ?? ""}`;
-	return `${when(ev.ts)} ${ev.ok === false ? "FAILED " : ""}${ev.summary}${ev.by && ev.by !== "main" ? ` (by ${ev.by})` : ""}${pairing(l, ev, zh)}`;
+	return `${when(ev.ts)} ${ev.ok === false ? "FAILED " : ""}${ev.summary}${ev.by && ev.by !== "main" ? ` (by ${ev.by})` : ""}${paired ? pairing(l, ev) : ""}`;
 }
 
 const decisionLine = (d: Ev) => `- (${d.line}) ${String(d.date ?? d.ts.slice(0, 10))}: ${d.text}`;
@@ -78,7 +76,7 @@ function reviewBlock(title: string, r: Review): string[] {
 	return out;
 }
 
-function renderTask(l: Table, t: Task, all: Item[]): string {
+export function renderTask(l: Table, t: Task, all: Item[]): string {
 	const out = [`# ${t.name}${t.title ? ` ${t.title}` : ""}（程序生成，勿手改）`, ""];
 	if (t.name !== GENERAL) {
 		out.push(`- 状态：${t.status || "进行中"}`, `- 负责 agent：${t.agent || "（无）"}`, `- 目标：${t.goal || "（无）"}`, `- 完成判据：${t.doneWhen || "（无）"}`, `- 盯的外部输入：${t.watch.length ? "" : "（无）"}`);
@@ -94,7 +92,7 @@ function renderTask(l: Table, t: Task, all: Item[]): string {
 	}
 	out.push("", "## 已定", "");
 	for (const d of l.decisions.filter(d => d.line === t.name)) out.push(`- ${String(d.date ?? d.ts.slice(0, 10))}：${d.text}`);
-	out.push("", "## 最近动作（最多 30 条；远端写入后面是它之前你对这个任务最近的一条决定）", "");
+	out.push("", "## 最近动作（最多 30 条；远端写入后面是它之前 30 分钟内你对这个任务的决定）", "");
 	for (const a of l.actions.filter(a => a.line === t.name).slice(-30)) out.push(`- ${describeAction(l, a, true)}`);
 	return `${out.join("\n")}\n`;
 }
@@ -129,11 +127,11 @@ export function snapshot(running: string[], l: Table = readTable()): string {
 		...asks.map(a => `[${a.n}] (${a.line}) ${a.text}`),
 	];
 	const must: string[] = [];
-	// 远端写入：用户上次发话之后的都列出来（至少最近 5 条：重启后靠它们防止重复做远端动作），各自配上之前的用户决定
+	// 远端写入：用户上次发话之后的都列出来（至少最近 5 条：重启后靠它们防止重复做远端动作）
 	const writes = l.actions.filter(a => a.kind === "action");
 	const fresh = l.lastInput ? writes.filter(a => a.ts > (l.lastInput as string)).length : 0;
 	const shown = writes.slice(-Math.min(RECENT_WRITES, Math.max(5, fresh)));
-	if (shown.length) must.push("Remote writes (each paired with the operator's last decision on that task before it; in your next report, name any write its decision does not cover):", ...shown.map(a => `- ${describeAction(l, a, false)}`));
+	if (shown.length) must.push("Remote writes recorded by the program (before redoing one, check its real state first):", ...shown.map(a => `- ${describeAction(l, a, false)}`));
 	if (l.corrections.size) must.push("Open corrections (propose a rule, then tasktable_correction close):", ...[...l.corrections.values()].map(k => `[${k.n}] (${k.line}) ${k.text}`));
 	if (running.length) must.push(`Agents running (${running.length}): ${running.join(", ")}`);
 

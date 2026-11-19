@@ -6,9 +6,9 @@
 // - 每次请求末尾附规则（不写进会话历史，压缩丢不掉）：主会话收调度规则、常设约束和任务表摘要；任务的负责 agent 收常设约束、负责 agent 的规矩和任务卡；任务的审查者收常设约束、审查规则和任务卡；其他子代理只收常设约束。
 // - 外部消息：会话外的程序写进 inbox/new；每 5 秒认领一次，按任务登记的「要盯的外部输入」归到任务，合成一条消息叫醒主会话，由它交给负责 agent。
 // - 按层定模型：派出任务的负责 agent 时由程序指定模型（默认跟主会话一样）；它再派的帮手照 omp 自己的配置。
-// - 审查：事项和任务要记成「完成」，任务表里得先有主会话另派的审查者记下的「通过」。
+// - 审查：任务要记成「完成」，任务表里得先有主会话另派的审查者记下的「通过」；事项记完成不拦，审不审由主会话按大小定。
 // - 提问：登记提问时要写查过哪里，程序把这个任务已有的决定列给模型看。
-// 远端写入自动记到任务表，并配上它之前用户最近的一条决定。除了审查那一条，不拦截任何操作。
+// 远端写入自动记到任务表；给人看的视图里配上它之前用户最近的决定。除了审查那一条，不拦截任何操作。
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -16,7 +16,7 @@ import { DISPATCH_RULES, HOME, INBOX_CLAIMED, INBOX_NEW, ORDERS, OWNER_RULES, RE
 import { remoteWrite } from "./remote";
 import { checkReply, feedback, renderRules, settings } from "./rules";
 import { OFF_MESSAGE, isOn, setOn } from "./switch";
-import { type Ev, GENERAL, type Table, agentTaken, append, doneBlocker, isReviewerName, itemDoneBlocker, logError, needsReview, openTasks, readTable, taskOfAgent, taskOfReviewer, today } from "./table";
+import { type Ev, GENERAL, type Table, agentTaken, append, doneBlocker, isReviewerName, logError, needsReview, openTasks, readTable, taskOfAgent, taskOfReviewer, today } from "./table";
 import { decidedFor, renderViews, since, snapshot, taskCard } from "./views";
 import { matchTask } from "./watch";
 
@@ -428,10 +428,6 @@ export default function (pi: ExtensionAPI): void {
 		async execute(_id: string, p: UpdateParams, _signal: unknown, _onUpdate: unknown, ctx: Ctx) {
 			const s = sidOf(ctx);
 			const line = taskOr(p.task);
-			if (p.status && needsReview(p.status)) {
-				const blocker = itemDoneBlocker(readTable(), line, p.id);
-				if (blocker) throw new Error(blocker);
-			}
 			const { task: _task, ...fields } = p;
 			record({ sid: s, kind: "item", line, ...fields });
 			return { content: [{ type: "text", text: `recorded ${line}/${p.id}` }] };
@@ -506,7 +502,7 @@ export default function (pi: ExtensionAPI): void {
 		name: "tasktable_review",
 		label: "Task table review",
 		description:
-			"Record the verdict of an independent review: of one item's result (pass item) or of the task as a whole (omit item). Only the reviewer the main session spawned for that task (a subagent named <owner agent>Review) can call it; the owner, its helpers and the main session cannot. An item or a task can be closed as 完成 only while its latest review is pass.",
+			"Record the verdict of an independent review: of one item's result (pass item) or of the task as a whole (omit item). Only the reviewer the main session spawned for that task (a subagent named <owner agent>Review) can call it; the owner, its helpers and the main session cannot. A task can be closed as 完成 only with a passing review of the task as a whole, or when all its items are closed and every completed item has its own passing review. Marking an item 完成 is not gated.",
 		parameters: z.object({
 			task: z.string().describe("Task name, as on the task card."),
 			item: z.string().optional().describe("Item id inside the task (e.g. T6) when you reviewed one item's result; omit when you reviewed the task against its completion criteria."),

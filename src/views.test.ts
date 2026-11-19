@@ -1,26 +1,26 @@
 import { expect, test } from "bun:test";
 import { foldEvents } from "./table";
-import { decidedFor, snapshot } from "./views";
+import { decidedFor, renderTask, snapshot } from "./views";
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 18, 1, minute)).toISOString();
 const ev = (minute: number, kind: string, line: string | undefined, extra: Record<string, unknown> = {}) => JSON.stringify({ ts: at(minute), sid: "s", kind, line, ...extra });
 
-test("摘要里的远端写入各自配上之前 30 分钟内用户对这个任务的决定（最多两条，近的在前）；没有的、只有别的任务的决定的，标成没有", () => {
-	const text = snapshot(
-		[],
-		foldEvents([
-			ev(0, "task", "A", { agent: "TaskA", done_when: "x" }),
-			ev(0, "decision", "A", { text: "更早的决定" }),
-			ev(1, "decision", "A", { text: "推不推到 PR 分支 → 推" }),
-			ev(2, "decision", "A", { text: "每日总结 → 改" }),
-			ev(3, "action", "A", { summary: "git push: one", by: "TaskA" }),
-			ev(40, "decision", "B", { text: "别的任务的决定" }),
-			ev(41, "action", "A", { summary: "git push: two", by: "TaskA" }),
-		]),
-	);
-	expect(text).toContain('git push: one (by TaskA) ← operator decisions before it: 1 min earlier "每日总结 → 改"; 2 min earlier "推不推到 PR 分支 → 推"');
-	expect(text).not.toContain('"更早的决定"');
-	expect(text).toContain("git push: two (by TaskA) ← NO operator decision on this task in the 30 min before");
+test("远端写入和用户决定的配对只在给人看的任务视图里：之前 30 分钟内这个任务的决定最多两条、近的在前，没有就注明；给模型的摘要里不配", () => {
+	const l = foldEvents([
+		ev(0, "task", "A", { agent: "TaskA", done_when: "x" }),
+		ev(0, "decision", "A", { text: "更早的决定" }),
+		ev(1, "decision", "A", { text: "推不推到 PR 分支 → 推" }),
+		ev(2, "decision", "A", { text: "每日总结 → 改" }),
+		ev(3, "action", "A", { summary: "git push: one", by: "TaskA" }),
+		ev(40, "decision", "B", { text: "别的任务的决定" }),
+		ev(41, "action", "A", { summary: "git push: two", by: "TaskA" }),
+	]);
+	const view = renderTask(l, l.tasks.get("A")!, []);
+	expect(view).toContain("git push: one (by TaskA) ← 之前你的决定：1 分钟前「每日总结 → 改」；2 分钟前「推不推到 PR 分支 → 推」");
+	expect(view).toContain("git push: two (by TaskA) ← 之前 30 分钟内没有你对这个任务的决定");
+	const text = snapshot([], l);
+	expect(text).toContain("git push: two (by TaskA)");
+	expect(text).not.toContain("←");
 });
 
 test("摘要超长时省掉的是放不下的事项和用户决定：待决定的事、每个任务和负责 agent、远端写入、在跑的 agent 都还在", () => {

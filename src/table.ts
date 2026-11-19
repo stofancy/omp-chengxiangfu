@@ -201,7 +201,8 @@ export function taskOfReviewer(l: Table, id: string): Task | undefined {
 const latest = (r?: Review) => (r ? `${r.verdict} by ${r.by}` : "none");
 
 // 任务现在能不能记成完成：不能时返回原因（给模型看，英文）。agent、doneWhen 是这次调用里一并传的。
-// 两条路：整个任务有通过的审查；或者（没重新打开过的任务）事项都已关闭，其中记成完成的每一项都有自己通过的审查
+// 两条路：整个任务有通过的审查；或者（没重新打开过的任务）事项都已关闭，其中记成完成的每一项都有自己通过的审查。
+// 事项记成完成不拦：要不要审由主会话按事项大小定
 export function doneBlocker(l: Table, name: string, agent?: string, doneWhen?: string): string | undefined {
 	const t = l.tasks.get(name);
 	const owner = agent || t?.agent;
@@ -211,14 +212,6 @@ export function doneBlocker(l: Table, name: string, agent?: string, doneWhen?: s
 	const finished = items.filter(i => needsReview(i.status)); // 取消的不算
 	if (!t?.reopened && finished.length && items.every(i => isDone(i.status)) && finished.every(i => i.review?.verdict === "pass")) return undefined;
 	return `${name} has no passing review of the task as a whole (latest: ${latest(t?.review)}), and its items are not all closed with a passing review each${t?.reopened ? " (a reopened task needs a new review of the task as a whole)" : ""}. Spawn a reviewer with the task tool, name="${owner}Review" (add a number for a re-review, e.g. ${owner}Review2), and give it only where the result is. It records its verdict with tasktable_review.`;
-}
-
-// 事项现在能不能记成完成：不能时返回原因。只管有负责 agent 的任务；已经是完成的事项再改别的字段不拦（取消过的再记完成照样要审）
-export function itemDoneBlocker(l: Table, name: string, id: string): string | undefined {
-	const owner = l.tasks.get(name)?.agent;
-	const item = l.items.get(name)?.get(id);
-	if (name === GENERAL || !owner || (item && needsReview(item.status)) || item?.review?.verdict === "pass") return undefined;
-	return `${name}/${id} has no passing review (latest: ${latest(item?.review)}). The owner sets its status to 待审查 and hands it back to the main session as 做完 with the evidence; the main session spawns a reviewer named "${owner}Review" (add a number for a re-review), which records its verdict with tasktable_review item="${id}". An item that is dropped is closed as 取消 without a review.`;
 }
 
 // 负责 agent 的名字在未完成的任务里不能重复：程序靠名字把子代理对到任务
