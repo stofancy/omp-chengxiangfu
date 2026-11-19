@@ -82,6 +82,13 @@ def main():
             channels[w["channel"]] = {"name": place_name(w["channel"], users), "line": w["task"]}
         elif not channels[w["channel"]].get("line"):
             channels[w["channel"]] = {**channels[w["channel"]], "line": w["task"]}
+    # 整个频道在读时，任务登记过的单条 thread 里的消息直接归那个任务、不分拣：不靠下面单读 thread 那一遍（刚登记的 thread 第一次只记位置，单读也可能失败）
+    threads = {(w["channel"], w["thread"]): w["task"] for w in plan if w.get("thread")}
+
+    def linked(meta, ch, thread):
+        task = threads.get((ch, thread))
+        return {**meta, "line": task} if task and not meta.get("line") else meta
+
     # 一个地方整个读完才收下它的消息：中途失败的游标不动、下次重读，读到一半的这次不处理，免得拦下的消息下次又分拣一遍
     for ch, meta in channels.items():
         if ch not in cursors:
@@ -94,14 +101,15 @@ def main():
             for m in history(ch, f"{cur - THREAD_WINDOW:.6f}"):
                 ts = float(m["ts"])
                 newest = max(newest, ts)
+                here = linked(meta, ch, m["ts"])
                 if ts > cur and m.get("user") != ME and m.get("subtype") in (None, "thread_broadcast"):
-                    got.append((ch, meta, m, None, None))
+                    got.append((ch, here, m, None, None))
                 if float(m.get("latest_reply", 0)) > cur:
                     for r in api("conversations.replies", channel=ch, ts=m["ts"], oldest=cursors[ch], limit=200).get("messages", []):
                         rts = float(r["ts"])
                         newest = max(newest, rts)
                         if r["ts"] != m["ts"] and rts > cur and r.get("user") != ME:
-                            got.append((ch, meta, r, m["ts"], m))
+                            got.append((ch, here, r, m["ts"], m))
         except Exception as exc:  # 一个地方读不了不影响别的；它的游标不动，下次重读
             failed.append(f"{meta['name']}: {exc}")
             continue
