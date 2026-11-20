@@ -1,10 +1,11 @@
-# omp-chengxiangfu
+# omp-dispatch-desk · 调度台
 
 给 [oh-my-pi（omp）](https://github.com/can1357/oh-my-pi) 加一个调度器模式：你只跟一个主会话说话；每个任务有一个自己的负责 agent，和这个任务有关的话、外面来的消息都交到它手里，怎么干由它定；主会话负责研判、统筹、验收和汇报。
 
 派子代理、给子代理发消息、子代理再派人、续会话后叫醒子代理、看谁在跑，都是 omp 自带的。插件只补 omp 没有的：一本任务表、每次请求附带的规则、把外部消息归到任务、按层定模型、完成前的审查、提问前的查重、远端写入对账、屏幕上分得清的回复和固定显示的待办、子代理交回被压住或久未交回时叫醒主会话、插件更新后提示重启。
 
-为什么这样设计、实践中踩过哪些坑、接下来往哪走，见[《注意力稀缺下的 harness 调度》](docs/注意力稀缺下的harness调度.md)。
+- [项目主页](https://stofancy.github.io/omp-dispatch-desk/)：用几张会动的图讲这套做法，跟着一条消息走一遍。
+- [《注意力稀缺下的 harness 调度》](docs/注意力稀缺下的harness调度.md)：为什么这样设计、实践中踩过哪些坑、接下来往哪走。
 
 三层：
 
@@ -14,6 +15,17 @@
 | 二 | 任务的负责 agent，每个任务一个，长期存在 | 持有这个任务的上下文，自己决定怎么干 | 默认跟主会话一样，可在 `config.json` 里改（`owner_model`） |
 | 二 | 任务的审查者，主会话在负责 agent 报做完时派出，用完即弃 | 重跑完成判据、试着找出不成立的地方、记审查结论 | 跟主会话一样 |
 | 三 | 负责 agent 派出的帮手，用完即弃 | 一件具体的活 | omp 自己的配置（代理 → 模型） |
+
+## 现状和规划
+
+作者自己每天在用。数据只有一个人、几天，只能算初步观察（文章第 9 节）。
+
+| | 已经有的 | 接下来 |
+|---|---|---|
+| 输入线 | Slack 实时推送和定时补读；PR 的评论、评审、投票；到期提醒；按订阅归位；噪音大的频道先分拣；每个来源报健康状态 | 先接 CI 和工单，再接日历和邮件；每个源都先过滤；「提前做」：负责 agent 先动手，有结果才说话；回复回到原处 |
+| 调度线 | 一本任务表；每个任务一个负责 agent；完成前独立审查；被压住的交回由插件送达；久未交回叫醒主会话 | 被叫醒的回合少说话；输入直送负责 agent（要 omp 开放接口）；按进展判断卡没卡住；远端写入从记录变成闸门；任务收尾 |
+
+接下来几周先用起来、量清楚：代码只修 bug，提示词的改动都记下来；和插件之前同口径比切换次数、「有回复了」的次数，算出每个任务的花费；用满一段时间后，每个任务花的注意力不比以前少，就砍到只剩任务表和外部输入两样。详见文章第 12 节。
 
 ## 用法
 
@@ -88,15 +100,15 @@
 ## 安装
 
 ```bash
-git clone https://github.com/stofancy/omp-chengxiangfu ~/src/omp-chengxiangfu
-omp plugin link ~/src/omp-chengxiangfu
+git clone https://github.com/stofancy/omp-dispatch-desk ~/src/omp-dispatch-desk
+omp plugin link ~/src/omp-dispatch-desk
 ```
 
 `omp plugin link` 装的是指向仓库的链接。改了 `src/` 或 `prompts/`，重启会话（`omp -c`）才生效：插件自带的规则和代码一起加载，同一个会话进程里不会出现新规则配旧代码。磁盘上的插件更新了，固定区会提示重启。
 
 ## 数据目录
 
-默认 `$XDG_DATA_HOME/chengxiangfu`（通常是 `~/.local/share/chengxiangfu`），可用环境变量 `CHENGXIANGFU_HOME` 改。
+默认 `$XDG_DATA_HOME/dispatch-desk`（通常是 `~/.local/share/dispatch-desk`），可用环境变量 `DISPATCH_DESK_HOME` 改。
 
 | 路径 | 内容 |
 |---|---|
@@ -110,6 +122,14 @@ omp plugin link ~/src/omp-chengxiangfu
 | `config.json` | `rules` 段是规则参数；其余是外部消息源的配置，见 `config.example.json` |
 
 从旧版升级：运行 `bun scripts/migrate-single-tasktable.ts [数据目录]`，把旧的分账本合并成这一本任务表，旧数据移到 `archive/<时间戳>/`。可重复运行，已迁移过就什么都不做。消息源的定时任务改成每 5 分钟（见 `deploy/crontab.example`）：程序按 5 分钟一个周期判断它们是否正常，还按旧间隔跑的会被误报成没在工作。
+
+从 omp-chengxiangfu 升级（这个插件改名前叫丞相府）：
+
+1. 停掉旧的 Slack 推送服务：`systemctl --user disable --now chengxiangfu-slack.service`，删掉它的 unit 文件。
+2. 挪数据目录：`mv ~/.local/share/chengxiangfu ~/.local/share/dispatch-desk`。设过 `CHENGXIANGFU_HOME` 的，改成 `DISPATCH_DESK_HOME`。
+3. 换插件链接：`omp plugin uninstall omp-chengxiangfu`（只删链接，不动仓库），把仓库的 remote 改成 `https://github.com/stofancy/omp-dispatch-desk` 并拉最新代码，再 `omp plugin link <仓库路径>`。
+4. 照 `deploy/dispatch-desk-slack.service` 和 `deploy/crontab.example` 重装推送服务和定时任务。
+5. 重启 omp 会话（`omp -c`）。哪些会话开着调度器模式记在数据目录里，挪过去后照旧。
 
 ## 外部消息
 
@@ -129,7 +149,7 @@ omp plugin link ~/src/omp-chengxiangfu
 
 | 文件 | 做什么 | 怎么跑 |
 |---|---|---|
-| `slack_socket.ts` | Slack 实时推送（Socket Mode）：配置里关注的频道、未完成任务登记要盯的频道和 thread、发给你的私信、@ 你的消息。配了分拣时，没归到任务的频道里不紧急的消息留给定时补读去分拣。每 30 秒发一次心跳，90 秒没回音就重连（切 VPN、机器休眠后连接会悄悄死掉） | 常驻，见 `deploy/chengxiangfu-slack.service` |
+| `slack_socket.ts` | Slack 实时推送（Socket Mode）：配置里关注的频道、未完成任务登记要盯的频道和 thread、发给你的私信、@ 你的消息。配了分拣时，没归到任务的频道里不紧急的消息留给定时补读去分拣。每 30 秒发一次心跳，90 秒没回音就重连（切 VPN、机器休眠后连接会悄悄死掉） | 常驻，见 `deploy/dispatch-desk-slack.service` |
 | `slack_poll.py` | 给实时推送兜底，补读配置里关注的频道，和未完成任务登记要盯的频道、私信、thread；配了分拣时，没归到任务的频道里不紧急的消息先分拣（见下） | 每 5 分钟，见 `deploy/crontab.example` |
 | `pr_poll.py` | 你开着的 PR、未完成任务登记要盯的 PR（别人开的也算）有新评论、review、投票（GitHub 走 `gh`，Azure DevOps 走 `az`） | 每 5 分钟 |
 | `reminders_poll.py` | 提醒文件里到期的条目，每天一次。`due` 写日期（当天第一次检查就提醒）或带时刻（`2026-11-18 16:30`，本机时间，到点后的第一次检查提醒，最多晚一个周期）。写错的条目（缺字段等）只跳过那一条，并报成故障 | 每 5 分钟 |
