@@ -6,7 +6,7 @@ import { dueHandbacks, holdHandback, lastStep, releaseHandback } from "./agents"
 
 let dir: string;
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "cxf-agents-"));
+	dir = mkdtempSync(join(tmpdir(), "dispatch-desk-agents-"));
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 

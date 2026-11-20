@@ -1,7 +1,7 @@
 # systemd 用户服务：Slack 实时推送。把 <bun> 和 <repo> 换成实际路径后放到 ~/.config/systemd/user/，
-# 再 systemctl --user enable --now chengxiangfu-slack；WSL 等无登录会话的环境还要 loginctl enable-linger。
+# 再 systemctl --user enable --now dispatch-desk-slack；WSL 等无登录会话的环境还要 loginctl enable-linger。
 [Unit]
-Description=omp-chengxiangfu：Slack 实时推送写外部消息
+Description=omp-dispatch-desk：Slack 实时推送写外部消息
 After=network-online.target
 
 [Service]

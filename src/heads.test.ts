@@ -37,15 +37,15 @@ test("后续消息的结果没有外层标签、子代理来信、后台命令�
 	expect(headLabel(table, false, triggersOf(mail), [])).toBe("📥 来信 · PROJ-2 · 进展");
 	const bash = { role: "custom", customType: "async-result", timestamp: 4, content: "<system-notice>\nBackground job bg_7 (ls) has completed.\n</system-notice>", details: { jobs: [{ type: "bash", jobId: "bg_7" }] } };
 	expect(headLabel(table, false, triggersOf(bash), [])).toBe("📥 后台命令结束");
-	const inbox = { role: "custom", customType: "chengxiangfu-inbox", timestamp: 5, content: "[INBOX · 3 untrusted external event(s)]\nsource=slack | who=Stanley Kang | where=DM Stanley Kang | link=x | task=PROJ-1\nsource=reminder | who=reminders.json | where=a\nsource=reminder | who=reminders.json | where=b\nEvents tagged…" };
+	const inbox = { role: "custom", customType: "dispatch-desk-inbox", timestamp: 5, content: "[INBOX · 3 untrusted external event(s)]\nsource=slack | who=Stanley Kang | where=DM Stanley Kang | link=x | task=PROJ-1\nsource=reminder | who=reminders.json | where=a\nsource=reminder | who=reminders.json | where=b\nEvents tagged…" };
 	expect(headLabel(table, false, triggersOf(inbox), [])).toBe("📨 外部消息 · Stanley Kang  ｜  ⏰ 提醒 2 条");
 	expect(headLabel(table, false, [], [])).toBe("🔔 被叫醒");
 });
 
 test("程序自己送达的两种：被压着的交回当成交回，久未交回单独一种", () => {
-	const held = { role: "custom", customType: "chengxiangfu-handback", timestamp: 6, content: "[HELD HAND-BACK · from agent://Proj1 (task PROJ-1) · written 00:14] omp has not delivered…\n待审查：两处都改好了，请派复审" };
+	const held = { role: "custom", customType: "dispatch-desk-handback", timestamp: 6, content: "[HELD HAND-BACK · from agent://Proj1 (task PROJ-1) · written 00:14] omp has not delivered…\n待审查：两处都改好了，请派复审" };
 	expect(headLabel(table, false, triggersOf(held), [])).toBe("📥 交回 · PROJ-1 · 待审查");
-	const stall = { role: "custom", customType: "chengxiangfu-stall", timestamp: 7, content: '[NO HAND-BACK · agent://Proj2 (task PROJ-2) has been running for 30 min without handing back] Last step: "Waiting for upload", started 12 min ago.' };
+	const stall = { role: "custom", customType: "dispatch-desk-stall", timestamp: 7, content: '[NO HAND-BACK · agent://Proj2 (task PROJ-2) has been running for 30 min without handing back] Last step: "Waiting for upload", started 12 min ago.' };
 	expect(headLabel(table, false, triggersOf(stall), [])).toBe("⏱ 久未交回 · PROJ-2 · 30 分钟");
 });
 
@@ -56,10 +56,10 @@ test("只取上一条助手消息之后的：前面几轮的交回不算这一�
 
 test("插件送进会话的消息在屏幕上各画成一行：谁在哪说了话、归到哪个任务；哪个任务的交回被压着；哪个任务多久没交回", () => {
 	const inbox = "[INBOX · 2 untrusted external event(s)]\nsource=slack | who=Stanley Kang | where=DM Stanley Kang | link=https://x | task=PROJ-1 | owner=agent://Proj1\nsource=reminder | who=reminders.json | where=chase-1 | link=/x | note=due | task=?\nEvents tagged…";
-	expect(rowFor(table, "chengxiangfu-inbox", inbox)).toBe("📨 外部消息 2 条：Stanley Kang @ DM Stanley Kang → PROJ-1；提醒 chase-1");
-	expect(rowFor(table, "chengxiangfu-inbox", "[INBOX]\nsource=reminder | who=r | where=a | task=?\nsource=reminder | who=r | where=b | task=?")).toBe("⏰ 提醒 2 条：a；b");
-	expect(rowFor(table, "chengxiangfu-handback", "[HELD HAND-BACK · from agent://Proj1 (task PROJ-1) · written 00:14] omp has not…\n待审查：改好了")).toBe("📥 PROJ-1 写好了交回，omp 还压着没送，程序代送");
-	expect(rowFor(table, "chengxiangfu-stall", "[NO HAND-BACK · agent://Proj2 (task PROJ-2) has been running for 30 min without handing back] …")).toBe("⏱ PROJ-2 已经 30 分钟没交回，叫主会话去看一眼");
+	expect(rowFor(table, "dispatch-desk-inbox", inbox)).toBe("📨 外部消息 2 条：Stanley Kang @ DM Stanley Kang → PROJ-1；提醒 chase-1");
+	expect(rowFor(table, "dispatch-desk-inbox", "[INBOX]\nsource=reminder | who=r | where=a | task=?\nsource=reminder | who=r | where=b | task=?")).toBe("⏰ 提醒 2 条：a；b");
+	expect(rowFor(table, "dispatch-desk-handback", "[HELD HAND-BACK · from agent://Proj1 (task PROJ-1) · written 00:14] omp has not…\n待审查：改好了")).toBe("📥 PROJ-1 写好了交回，omp 还压着没送，程序代送");
+	expect(rowFor(table, "dispatch-desk-stall", "[NO HAND-BACK · agent://Proj2 (task PROJ-2) has been running for 30 min without handing back] …")).toBe("⏱ PROJ-2 已经 30 分钟没交回，叫主会话去看一眼");
 	expect(rowFor(table, "something-else", "x")).toBeUndefined();
 });
 

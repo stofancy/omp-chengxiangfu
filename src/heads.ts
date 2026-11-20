@@ -41,18 +41,18 @@ export function triggersOf(message: unknown): Trigger[] {
 		const agent = /from agent `([^`]+)`/.exec(body)?.[1];
 		return agent ? [{ kind: "mail", agent, first: firstLine(body.replace(/^[\s\S]*?:\n\n/, "")) }] : [];
 	}
-	if (m.customType === "chengxiangfu-inbox") {
+	if (m.customType === "dispatch-desk-inbox") {
 		const lines = body.split("\n").filter(l => l.startsWith("source="));
 		const reminders = lines.filter(l => l.startsWith("source=reminder")).length;
 		const who = [...new Set(lines.filter(l => !l.startsWith("source=reminder")).map(l => /\| who=([^|]+)/.exec(l)?.[1]?.trim() ?? "").filter(Boolean))];
 		return [{ kind: "inbox", reminders, others: lines.length - reminders, who }];
 	}
 	// 插件自己送达的：被 omp 压着的交回、久未交回的提醒（正文格式见 index.ts）
-	if (m.customType === "chengxiangfu-handback") {
+	if (m.customType === "dispatch-desk-handback") {
 		const agent = /agent:\/\/([^\s·)\]]+)/.exec(body)?.[1];
 		return agent ? [{ kind: "job", agent, first: firstLine(body.slice(body.indexOf("\n") + 1)) }] : [];
 	}
-	if (m.customType === "chengxiangfu-stall") {
+	if (m.customType === "dispatch-desk-stall") {
 		const hit = /agent:\/\/([^\s·)\]]+)[^\n]*?(\d+) min/.exec(body);
 		return hit ? [{ kind: "stall", agent: hit[1], minutes: Number(hit[2]) }] : [];
 	}
@@ -147,7 +147,7 @@ export function headLine(label: string, cols: number, width: (s: string) => numb
 
 // 插件自己送进会话的三种消息在屏幕上各画成一行：正文是给模型看的英文说明，用户要看再展开
 export function rowFor(l: Table, customType: string, content: string): string | undefined {
-	if (customType === "chengxiangfu-inbox") {
+	if (customType === "dispatch-desk-inbox") {
 		const field = (line: string, key: string) => new RegExp(`(?:^|\\| )${key}=([^|]+)`).exec(line)?.[1]?.trim();
 		const lines = content.split("\n").filter(s => s.startsWith("source="));
 		const reminders = lines.filter(s => field(s, "source") === "reminder").map(s => field(s, "where") ?? "?");
@@ -163,7 +163,7 @@ export function rowFor(l: Table, customType: string, content: string): string | 
 	const t = triggersOf({ role: "custom", customType, content })[0];
 	if (!t || t.kind === "inbox" || !t.agent) return undefined;
 	const who = roleOf(l, t.agent).task ?? t.agent;
-	if (customType === "chengxiangfu-handback") return `📥 ${who} 写好了交回，omp 还压着没送，程序代送`;
+	if (customType === "dispatch-desk-handback") return `📥 ${who} 写好了交回，omp 还压着没送，程序代送`;
 	if (t.kind === "stall") return `⏱ ${who} 已经 ${t.minutes} 分钟没交回，叫主会话去看一眼`;
 	return undefined;
 }

@@ -16,7 +16,7 @@ description: 用户要看自己最近在 omp 里花了多少注意力时用（�
    bun <技能目录>/stats.ts --since 2026-11-10 --until 2026-11-17
    ```
 
-   数据目录和会话目录一般不用指定（默认 `~/.local/share/chengxiangfu` 和 `~/.omp/agent/sessions`），需要时用 `--data`、`--sessions` 覆盖。
+   数据目录和会话目录一般不用指定（默认 `~/.local/share/dispatch-desk` 和 `~/.omp/agent/sessions`），需要时用 `--data`、`--sessions` 覆盖。
 3. 把脚本输出的两张表**原样**贴给用户，不改数字、不重排。
 4. 表后补一两句观察，比如哪天最忙、注意力集中在哪个任务、回复里有多少不是用户发话引起的、未归类占比高不高。只说数据能直接看出来的，不猜原因。
 

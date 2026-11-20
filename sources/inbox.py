@@ -8,7 +8,7 @@ import tempfile
 import time
 from pathlib import Path
 
-HOME = Path(os.environ.get("CHENGXIANGFU_HOME") or Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "chengxiangfu")
+HOME = Path(os.environ.get("DISPATCH_DESK_HOME") or Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "dispatch-desk")
 INBOX_NEW = HOME / "inbox" / "new"
 STATE = HOME / "state"
 CONFIG = json.loads((HOME / "config.json").read_text())

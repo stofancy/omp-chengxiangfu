@@ -178,7 +178,7 @@ export function snapshot(running: string[], l: Table = readTable(), monitoring: 
 	const decided = decisions[0]?.startsWith("- ") ? ["Operator decisions (newest first; all of them are in the per-task views):", ...decisions] : []; // 一条都放不下就不占地方
 	const text = [...head, ...work, ...must, ...decided].join("\n");
 	return [
-		`<tasktable-context source="chengxiangfu extension" from_operator="no">`,
+		`<tasktable-context source="dispatch-desk extension" from_operator="no">`,
 		"Injected automatically on every request; NOT a message from the operator. Do not acknowledge, quote or summarise it unless the request needs these items.",
 		text,
 		"</tasktable-context>",

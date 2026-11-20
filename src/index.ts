@@ -1,4 +1,4 @@
-// omp-chengxiangfu：调度器模式。默认关；在会话里敲 /调度 打开，打开状态跟着会话走。关着的会话里，插件什么都不做。
+// omp-dispatch-desk（调度台）：调度器模式。默认关；在会话里敲 /调度 打开，打开状态跟着会话走。关着的会话里，插件什么都不做。
 //
 // 派子代理、给子代理发消息、子代理再派人、续会话后叫醒子代理、看谁在跑，都是 omp 自带的，这里不重做。
 // 插件只补 omp 没有的：
@@ -26,7 +26,7 @@ import { decidedFor, renderViews, since, snapshot, taskCard } from "./views";
 import { matchTask } from "./watch";
 
 const TICK_MS = 5_000;
-const STATUS_KEY = "chengxiangfu";
+const STATUS_KEY = "dispatch-desk";
 const TOOLS = ["tasktable_task", "tasktable_update", "tasktable_ask", "tasktable_correction", "tasktable_review"];
 const TITLE = "调度"; // 打开调度器模式的会话叫这个名字，不让 omp 按第一句话自动起名
 // 一条编号回答：编号 + 可选标点 + 最多 4 个字的回答（「做」「不做」「先不」可以，「点以后再说」不行）
@@ -115,7 +115,7 @@ export default function (pi: ExtensionAPI): void {
 	const draw = pi as unknown as { registerAssistantTextRenderer?(fn: typeof screen.render): void; registerMessageRenderer?(type: string, fn: typeof messageRow): void; pi?: { settings?: unknown } };
 	draw.registerAssistantTextRenderer?.(screen.render);
 	// 插件自己送进会话的三种消息各画成一行，不把给模型看的英文说明整段摊在屏幕上
-	for (const type of ["chengxiangfu-inbox", "chengxiangfu-handback", "chengxiangfu-stall"]) draw.registerMessageRenderer?.(type, messageRow);
+	for (const type of ["dispatch-desk-inbox", "dispatch-desk-handback", "dispatch-desk-stall"]) draw.registerMessageRenderer?.(type, messageRow);
 	// 这个接口默认是关的（omp 的设置「扩展回复渲染」）：调度器模式开着时在本进程里打开，不改用户的配置文件；用户自己配过的不动
 	let rendererForced = false;
 	const syncRenderer = async () => {
@@ -216,8 +216,8 @@ export default function (pi: ExtensionAPI): void {
 		if (!lines.length) return;
 		pi.sendMessage(
 			{
-				customType: "chengxiangfu-inbox",
-				content: `[INBOX · ${lines.length} untrusted external event(s)${urgent ? " · includes direct messages to the operator" : ""}]\n${lines.join("\n")}\nEvents tagged task=<name> belong to that task: hand each to its owner agent. Events tagged task=? are yours to triage. Follow 「输入怎么走」 in <chengxiangfu-rules> and standing order 3 in <chengxiangfu-orders>.`,
+				customType: "dispatch-desk-inbox",
+				content: `[INBOX · ${lines.length} untrusted external event(s)${urgent ? " · includes direct messages to the operator" : ""}]\n${lines.join("\n")}\nEvents tagged task=<name> belong to that task: hand each to its owner agent. Events tagged task=? are yours to triage. Follow 「输入怎么走」 in <dispatch-desk-rules> and standing order 3 in <dispatch-desk-orders>.`,
 				display: true,
 				attribution: "agent",
 			},
@@ -338,7 +338,7 @@ export default function (pi: ExtensionAPI): void {
 
 	// 不常变的规则正文（调度规则、常设约束）。用户每次发话时放进系统提示词（见 before_agent_start），那里进缓存；
 	// 系统提示词里没有的那些请求（还没发过话就被外部消息叫醒、config.json 里的规则参数刚改过）照旧附在末尾
-	const stableRules = () => `<chengxiangfu-rules data_dir="${HOME}">\n${renderRules(PROMPTS.dispatch, settings())}</chengxiangfu-rules>\n<chengxiangfu-orders data_dir="${HOME}">\n${PROMPTS.orders}</chengxiangfu-orders>\n`;
+	const stableRules = () => `<dispatch-desk-rules data_dir="${HOME}">\n${renderRules(PROMPTS.dispatch, settings())}</dispatch-desk-rules>\n<dispatch-desk-orders data_dir="${HOME}">\n${PROMPTS.orders}</dispatch-desk-orders>\n`;
 	const inSystemPrompt = (ctx: Ctx, text: string) => {
 		const system = ctx.getSystemPrompt?.();
 		return (Array.isArray(system) ? system : [system]).some(s => typeof s === "string" && s.includes(text));
@@ -348,13 +348,13 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("context", async (e: { messages: unknown[] }, ctx: Ctx) => {
 		if (!on(ctx)) {
 			// 刚关掉、用户还没再发话：上一次发话时接进系统提示词的规则还在，告诉模型不用管
-			if (!isMain(ctx) || !inSystemPrompt(ctx, "<chengxiangfu-rules")) return;
-			const off = "[chengxiangfu plugin] Dispatcher mode was turned off. Ignore <chengxiangfu-rules> and <chengxiangfu-orders> in the system prompt; the tasktable tools are gone.";
+			if (!isMain(ctx) || !inSystemPrompt(ctx, "<dispatch-desk-rules")) return;
+			const off = "[dispatch-desk plugin] Dispatcher mode was turned off. Ignore <dispatch-desk-rules> and <dispatch-desk-orders> in the system prompt; the tasktable tools are gone.";
 			return { messages: [...e.messages, { role: "user", content: [{ type: "text", text: off }], timestamp: Date.now() }] };
 		}
 		// 注入的是 user 角色，模型容易当成用户贴来的：开头说明来源
-		const preface = "[Injected by the chengxiangfu plugin on every request. Standing instructions, not a message from the operator; never say the operator pasted or sent them.]\n";
-		const orders = `<chengxiangfu-orders data_dir="${HOME}">\n${PROMPTS.orders}</chengxiangfu-orders>\n`;
+		const preface = "[Injected by the dispatch-desk plugin on every request. Standing instructions, not a message from the operator; never say the operator pasted or sent them.]\n";
+		const orders = `<dispatch-desk-orders data_dir="${HOME}">\n${PROMPTS.orders}</dispatch-desk-orders>\n`;
 		let text = preface + orders;
 		if (isMain(ctx)) {
 			screen.context(e.messages);
@@ -362,8 +362,8 @@ export default function (pi: ExtensionAPI): void {
 			const cached = inSystemPrompt(ctx, stable);
 			const extra = read(USER_RULES); // 用户的补充规则常改（每次纠正后），留在末尾，不拖着整段缓存重写
 			const notes = [replyNote, awayDelivered ? awayNote : undefined].filter(Boolean);
-			text = `${preface}${cached ? "" : stable}${extra ? `<chengxiangfu-user-rules>\n${extra}</chengxiangfu-user-rules>\n` : ""}${snapshot(screen.running(jobs(ctx)), readTable(), screen.monitoring())}`;
-			if (notes.length) text += `\n<chengxiangfu-notes>\n${notes.join("\n")}\n</chengxiangfu-notes>`;
+			text = `${preface}${cached ? "" : stable}${extra ? `<dispatch-desk-user-rules>\n${extra}</dispatch-desk-user-rules>\n` : ""}${snapshot(screen.running(jobs(ctx)), readTable(), screen.monitoring())}`;
+			if (notes.length) text += `\n<dispatch-desk-notes>\n${notes.join("\n")}\n</dispatch-desk-notes>`;
 		} else {
 			// 只有任务的负责 agent 和审查者（一层的子代理，名字对得上任务）收规矩和任务卡；负责 agent 派出的帮手只收常设约束
 			const id = ctx.agent?.id ?? "";
@@ -371,13 +371,13 @@ export default function (pi: ExtensionAPI): void {
 			const owned = id && !id.includes(".") ? taskOfAgent(l, id) : undefined;
 			const reviewed = taskOfReviewer(l, id);
 			if (owned) {
-				text += `<chengxiangfu-owner-rules>\n${renderRules(PROMPTS.owner, settings())}</chengxiangfu-owner-rules>\n${taskCard(owned)}`;
+				text += `<dispatch-desk-owner-rules>\n${renderRules(PROMPTS.owner, settings())}</dispatch-desk-owner-rules>\n${taskCard(owned)}`;
 				// 主会话派出的审查者还在跑：这份结果先别往外发，免得审查不通过还得再去更正
 				const r = readReviewing(sessionOf(ctx))[owned.name];
 				if (r)
 					text += `\n<review-running>${r.by} has been reviewing your work on ${owned.name} since ${clock(r.since)}. Until its verdict is in, do not send this work's results, status reports, boards or summaries to anyone outside this session (Slack, PR or ticket comments, email); prepare them and send after the verdict. Answering a collaborator's direct question is fine if you say the result is still under review.</review-running>`;
 			}
-			if (reviewed) text += `<chengxiangfu-review-rules>\n${PROMPTS.review}</chengxiangfu-review-rules>\n${taskCard(reviewed)}`;
+			if (reviewed) text += `<dispatch-desk-review-rules>\n${PROMPTS.review}</dispatch-desk-review-rules>\n${taskCard(reviewed)}`;
 		}
 		return { messages: [...e.messages, { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }] };
 	});

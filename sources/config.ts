@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const HOME = process.env.CHENGXIANGFU_HOME ?? join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local/share"), "chengxiangfu");
+export const HOME = process.env.DISPATCH_DESK_HOME ?? join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local/share"), "dispatch-desk");
 const INBOX = join(HOME, "inbox");
 
 export interface Secret { file: string; json_key?: string }

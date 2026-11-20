@@ -15,7 +15,7 @@ import { type Table, logError, openItems, openTasks, ownerOfReviewer, readTable,
 import type { Monitoring } from "./views";
 import { type Sources, observed, watchPlan } from "./watch";
 
-const WIDGET_KEY = "chengxiangfu";
+const WIDGET_KEY = "dispatch-desk";
 const HELD_GRACE_MS = 15_000; // 子代理写完交回后这么久 omp 还没送，就由程序送
 const HEADS_KEPT = 400;
 const ASKS_SHOWN = 4;
@@ -308,7 +308,7 @@ export function createScreen(deps: ScreenDeps) {
 					const task = taskOfJob(l, h.agent);
 					heldSent.set(h.agent, h.at);
 					deps.send({
-						customType: "chengxiangfu-handback",
+						customType: "dispatch-desk-handback",
 						content: `[HELD HAND-BACK · from agent://${h.agent}${task ? ` (task ${task})` : ""} · written ${new Date(h.at).toLocaleTimeString("sv-SE").slice(0, 5)}] omp has not delivered this hand-back: the agent finished its turn but still has a background job or helper running, and omp reports an agent only when it is fully idle. Treat the text below as its hand-back now. omp may deliver the same or a later result when the agent goes idle; do not act on a duplicate twice.\n${h.text}`,
 						display: true,
 						attribution: "agent",
@@ -337,7 +337,7 @@ export function createScreen(deps: ScreenDeps) {
 						? `Last step: "${step.what}", started ${minutes(now - step.since)} min ago.`
 						: "";
 				deps.send({
-					customType: "chengxiangfu-stall",
+					customType: "dispatch-desk-stall",
 					content: `[NO HAND-BACK · agent://${agent} (task ${task}) has been running for ${ran} min without handing back] ${doing} Look at what it is doing (read history://${agent}). If it is stuck or waiting on something slow, write agent://${agent} to make it report progress, stop the background work, or change approach. Tell the operator only if they are waiting on this task or it needs them; otherwise reply with one short line.`,
 					display: true,
 					attribution: "agent",

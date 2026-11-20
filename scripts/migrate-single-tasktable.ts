@@ -1,6 +1,6 @@
 // 迁移：把旧的按会话分账本（courts/*/events.jsonl）合并成全局唯一的任务表（tasks/events.jsonl），
 // 旧的 courts/ 和 bindings/ 整体移到 archive/<时间戳>/。零依赖，bun 直接跑：
-//   bun scripts/migrate-single-tasktable.ts            # 数据目录取 CHENGXIANGFU_HOME，默认 ~/.local/share/chengxiangfu
+//   bun scripts/migrate-single-tasktable.ts            # 数据目录取 DISPATCH_DESK_HOME，默认 ~/.local/share/dispatch-desk
 //   bun scripts/migrate-single-tasktable.ts <数据目录>
 // 可重复运行：旧目录已经不在时什么都不做。
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -16,7 +16,7 @@ export interface MigrateResult {
 	archive?: string;
 }
 
-const defaultHome = () => process.env.CHENGXIANGFU_HOME ?? join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local/share"), "chengxiangfu");
+const defaultHome = () => process.env.DISPATCH_DESK_HOME ?? join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local/share"), "dispatch-desk");
 
 // 压缩的本地时间戳，如 20261118-153045；archive 下重名时加序号
 function archiveDir(home: string, now: Date): string {

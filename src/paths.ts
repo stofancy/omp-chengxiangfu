@@ -1,10 +1,10 @@
 // 数据目录：任务表、外部消息。和代码分开。
-// 默认 $XDG_DATA_HOME/chengxiangfu（通常是 ~/.local/share/chengxiangfu），可用 CHENGXIANGFU_HOME 覆盖。
+// 默认 $XDG_DATA_HOME/dispatch-desk（通常是 ~/.local/share/dispatch-desk），可用 DISPATCH_DESK_HOME 覆盖。
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const HOME = process.env.CHENGXIANGFU_HOME ?? join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local/share"), "chengxiangfu");
+export const HOME = process.env.DISPATCH_DESK_HOME ?? join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local/share"), "dispatch-desk");
 
 export const TASKS = join(HOME, "tasks"); // tasks/events.jsonl、views/：全局唯一一份任务表
 export const INBOX_NEW = join(HOME, "inbox/new");

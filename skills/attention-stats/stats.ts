@@ -9,8 +9,8 @@ const ACTIVE_GAP_MS = 5 * 60_000;
 const UNSORTED = "未归类";
 // 只有形如 PROJ-123 的编号才做文本匹配；「日常」这类兜底 line 太泛，只统计事件
 const TASK_ID = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
-// 这些插件消息会叫醒主会话：它们后面的回复不是用户发话引起的
-const WAKERS = new Set(["async-result", "irc:incoming", "chengxiangfu-inbox"]);
+// 这些插件消息会叫醒主会话：它们后面的回复不是用户发话引起的。chengxiangfu-inbox 是插件改名前的会话记录里外部消息的类型
+const WAKERS = new Set(["async-result", "irc:incoming", "dispatch-desk-inbox", "chengxiangfu-inbox"]);
 // 程序在用户发话的同时记账（编号回答），时间戳可能比消息早一点
 const SLACK_MS = 5_000;
 // 远端写入之前这么久以内有用户对这个任务的决定，才算配得上
@@ -284,7 +284,7 @@ function parseArgs(argv: string[]) {
 	const opts = {
 		since: localDate(weekAgo.getTime()),
 		until: localDate(today.getTime()),
-		data: join(homedir(), ".local/share/chengxiangfu"),
+		data: join(homedir(), ".local/share/dispatch-desk"),
 		sessions: join(homedir(), ".omp/agent/sessions"),
 	};
 	for (let i = 0; i < argv.length; i += 2) {

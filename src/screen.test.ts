@@ -6,7 +6,7 @@ import { codeStamp } from "./screen";
 
 let dir: string;
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "cxf-stamp-"));
+	dir = mkdtempSync(join(tmpdir(), "dispatch-desk-stamp-"));
 	mkdirSync(join(dir, "src"));
 	mkdirSync(join(dir, "prompts"));
 	writeFileSync(join(dir, "src", "a.ts"), "export const a = 1;\n");

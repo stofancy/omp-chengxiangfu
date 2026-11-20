@@ -1,11 +1,13 @@
 {
-  "name": "omp-chengxiangfu",
+  "name": "omp-dispatch-desk",
   "version": "0.1.0",
-  "description": "装上后每个 oh-my-pi（omp）主会话都是一个调度器：派活、验收、记账、汇报，外面有动静时自己醒来。不想用就卸载。",
+  "description": "调度台：给 oh-my-pi（omp）加一个调度器模式。敲 /调度 后，主会话接住外部输入，把活交给每个任务的负责 agent，做完由另一个 agent 审查，只把要你定的事拿给你。",
   "type": "module",
   "license": "MIT",
   "author": "stofancy",
-  "keywords": ["omp", "oh-my-pi", "omp-plugin", "agent", "orchestration"],
+  "homepage": "https://stofancy.github.io/omp-dispatch-desk/",
+  "repository": { "type": "git", "url": "git+https://github.com/stofancy/omp-dispatch-desk.git" },
+  "keywords": ["omp", "oh-my-pi", "omp-plugin", "agent", "orchestration", "dispatch"],
   "files": ["src", "prompts", "skills", "sources", "scripts", "deploy", "config.example.json", "README.md", "LICENSE"],
   "omp": {
     "extensions": ["./src/index.ts"]
