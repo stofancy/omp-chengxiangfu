@@ -4,10 +4,12 @@
 一个地方第一次读只记下当前位置，不回放历史。私信和 @ 到你的消息标为紧急。同一条消息推送已经写过的不会重复。
 配置里没归到任务（没写 line）的频道，配了 triage 时不紧急的消息先分拣：无关的只记进 state/triage.jsonl，不送；推送把这类消息留给这里。
 """
+import http.client
 import json
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -16,12 +18,27 @@ from inbox import CONFIG, TRIAGE, health, load_state, log_triage, read_secret, s
 SLACK = CONFIG["slack"]
 ME = SLACK["me"]
 TOKEN = read_secret(SLACK["user_token"])
+RETRY_WAIT = [3, 10]  # 网络不稳时大的响应常被中途截断（IncompleteRead）或超时：同一个请求隔几秒再试，最多三次
 
 
 def api(method, **params):
     req = urllib.request.Request(f"https://slack.com/api/{method}?{urllib.parse.urlencode(params)}", headers={"Authorization": f"Bearer {TOKEN}"})
-    with urllib.request.urlopen(req, timeout=60) as res:
-        data = json.load(res)
+    for wait in RETRY_WAIT:
+        try:
+            with urllib.request.urlopen(req, timeout=60) as res:
+                data = json.load(res)
+            break
+        except urllib.error.HTTPError:
+            raise  # HTTP 错误（限流、权限）不是网络抖动，照原样报
+        except (http.client.HTTPException, OSError):
+            time.sleep(wait)
+    else:
+        try:
+            with urllib.request.urlopen(req, timeout=60) as res:
+                data = json.load(res)
+        except (http.client.HTTPException, OSError):
+            RETRY_WAIT.clear()  # 三次都失败，网络多半整个不通：这次运行剩下的请求只试一次，免得一次运行拖到几十分钟
+            raise
     if not data.get("ok"):
         raise RuntimeError(f"{method}: {data.get('error')}")
     return data
@@ -57,10 +74,11 @@ THREAD_WINDOW = 7 * 86400  # 整个频道在读时，只看最近 7 天发起的
 
 
 def history(ch, oldest):
-    """翻页读完 oldest 之后的全部顶层消息：只读第一页会在消息多时永久漏掉。"""
+    """翻页读完 oldest 之后的全部顶层消息：只读第一页会在消息多时永久漏掉。
+    每页 50 条：大频道 7 天一页 200 条有几百 KB，网络不稳时几乎每次都被截断；页小了，截断也只重下这一页。"""
     cursor = None
     while True:
-        page = api("conversations.history", channel=ch, oldest=oldest, limit=200, **({"cursor": cursor} if cursor else {}))
+        page = api("conversations.history", channel=ch, oldest=oldest, limit=50, **({"cursor": cursor} if cursor else {}))
         yield from page.get("messages", [])
         cursor = page.get("response_metadata", {}).get("next_cursor")
         if not cursor:
@@ -101,7 +119,7 @@ def main():
             for m in history(ch, f"{cur - THREAD_WINDOW:.6f}"):
                 ts = float(m["ts"])
                 newest = max(newest, ts)
-                here = linked(meta, ch, m["ts"])
+                here = linked(meta, ch, m.get("thread_ts") or m["ts"])  # 广播到频道的 thread 回复归它所在的 thread
                 if ts > cur and m.get("user") != ME and m.get("subtype") in (None, "thread_broadcast"):
                     got.append((ch, here, m, None, None))
                 if float(m.get("latest_reply", 0)) > cur:
