@@ -53,17 +53,6 @@ body {
   overflow-x: hidden;
 }
 
-/* 一层很淡的颗粒，让深色不那么平 */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  pointer-events: none;
-  opacity: 0.05;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .6 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
 ::selection { background: rgba(136, 197, 217, 0.26); color: var(--text-hi); }
 
 a { color: inherit; text-decoration: none; }
@@ -98,10 +87,9 @@ a { color: inherit; text-decoration: none; }
   transition: background 0.6s var(--ease), border-color 0.6s var(--ease);
 }
 
+/* 不用 backdrop-filter：顶栏下面是每帧都在变的画布，模糊要跟着每帧重算 */
 .topbar.is-scrolled {
-  background: rgba(4, 7, 13, 0.74);
-  backdrop-filter: blur(14px) saturate(120%);
-  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  background: rgba(4, 7, 13, 0.94);
   border-bottom-color: var(--hair);
 }
 
@@ -125,7 +113,10 @@ a { color: inherit; text-decoration: none; }
 }
 .topnav a:hover { color: var(--text-hi); }
 .topnav a:hover::after { transform: scaleX(1); }
-.topnav .ext::before { content: "↗"; font: 400 11px var(--mono); color: var(--text-3); margin-right: 4px; }
+.topnav { align-items: center; }
+.topnav .gh { display: inline-flex; padding: 4px 0; color: var(--text-2); }
+.topnav .gh::after { display: none; }
+.topnav .gh:hover { color: var(--text-hi); }
 
 .progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; }
 .progress span {
@@ -196,9 +187,7 @@ a { color: inherit; text-decoration: none; }
   padding: 4px;
   border: 1px solid var(--hair-2);
   border-radius: 999px;
-  background: rgba(7, 16, 27, 0.62);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: rgba(7, 16, 27, 0.86);
 }
 .js .switch { display: inline-flex; }
 .switch button {
@@ -409,11 +398,7 @@ a { color: inherit; text-decoration: none; }
 .glue text { font: 400 13px var(--mono); fill: var(--text-3); }
 .glue text.warm { fill: var(--warm); font-family: var(--serif); font-size: 15px; letter-spacing: 0.08em; }
 .glue .knot { fill: var(--warm); }
-.glue .knot-halo { fill: var(--warm); opacity: 0.12; transform-box: fill-box; transform-origin: center; animation: breathe 5s var(--ease) infinite; }
-@keyframes breathe {
-  0%, 100% { transform: scale(0.8); opacity: 0.08; }
-  50% { transform: scale(1.25); opacity: 0.2; }
-}
+.glue .knot-halo { fill: var(--warm); opacity: 0.14; }
 .glue figcaption { max-width: 720px; margin-top: 18px; font-size: 15.5px; color: var(--text-2); }
 
 .trial {
@@ -517,95 +502,22 @@ html:not(.js) .dots i { transform: none; opacity: 1; }
 .js .gap.is-in .gap-desk { opacity: 1; transform: none; }
 html:not(.js) .gap-arrow { transform: none; }
 
-/* ---------- 03 走一遍 ---------- */
+/* ---------- 03 走一遍：组件样式在 morning.css ---------- */
 
-.flow { margin-top: 36px; }
+.morning { margin-top: 36px; }
+.morning .mn-node .t,
+.morning .mn-title { font-family: var(--serif); }
+.morning .mn-bands text,
+.morning .mn-label,
+.morning .mn-node .s,
+.morning .mn-time { font-family: var(--mono); }
 
-.flow-stage {
-  overflow-x: auto;
-  padding: 8px;
-  border: 1px solid var(--hair);
-  border-radius: 20px;
-  background:
-    radial-gradient(520px 380px at 32% 58%, rgba(30, 62, 104, 0.24), transparent 70%),
-    rgba(6, 12, 22, 0.55);
-}
-
-.flow-svg { display: block; width: 100%; min-width: 640px; height: auto; }
-
-.bands text { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; fill: var(--text-3); }
-.bands line { stroke: var(--hair); stroke-dasharray: 2 6; }
-
-.edge { fill: none; stroke: var(--hair-2); stroke-width: 1.4; transition: stroke 0.6s var(--ease); }
-.edge.is-done { stroke: rgba(136, 197, 217, 0.5); }
-.edge.is-done.warm { stroke: rgba(230, 181, 107, 0.55); }
-.edge.is-live { stroke: var(--cold); stroke-dasharray: 5 7; animation: flowdash 1.1s linear infinite; }
-.edge.is-live.warm { stroke: var(--warm); }
-@keyframes flowdash { to { stroke-dashoffset: -24; } }
-
-.elabel { font-family: var(--mono); font-size: 13px; fill: var(--text-3); transition: fill 0.6s; }
-.elabel.is-on { fill: var(--text); }
-
-.node rect { fill: rgba(10, 20, 35, 0.94); stroke: var(--hair-2); stroke-width: 1.2; transition: stroke 0.6s var(--ease), fill 0.6s var(--ease); }
-.node.store rect { fill: rgba(12, 24, 40, 0.94); }
-.node.ext rect { stroke-dasharray: 4 5; }
-.node .t { font-family: var(--serif); font-size: 17px; font-weight: 600; fill: var(--text-2); transition: fill 0.6s; }
-.node .s { font-family: var(--mono); font-size: 12px; fill: var(--text-3); }
-.node.is-on rect { stroke: var(--cold); fill: rgba(16, 36, 62, 0.96); }
-.node.is-on .t { fill: var(--text-hi); }
-.node.you .core { fill: rgba(230, 181, 107, 0.1); stroke: rgba(230, 181, 107, 0.5); stroke-width: 1.2; transition: fill 0.6s, stroke 0.6s; }
-.node.you .halo { fill: var(--warm); opacity: 0; transition: opacity 0.8s; }
-.node.you .t { fill: var(--warm); font-size: 18px; }
-.node.you.is-on .core { fill: rgba(230, 181, 107, 0.22); stroke: var(--warm); }
-.node.you.is-on .halo { opacity: 0.1; }
-
-.token { fill: var(--cold); opacity: 0; transition: fill 0.3s; }
-.token-halo { fill: var(--cold); opacity: 0; transition: fill 0.3s; }
-.token.warm,
-.token-halo.warm { fill: var(--warm); }
-
-.flow-panel { display: none; }
-.js .flow-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(230px, 1fr);
-  grid-template-areas: "dots ctrl" "step you";
-  gap: 0 44px;
-  margin-top: 28px;
-}
-
-.flow-dots { grid-area: dots; display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 22px; padding: 0; list-style: none; }
-.flow-dots button {
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 1px solid var(--hair-2);
-  border-radius: 50%;
-  background: transparent;
-  color: var(--text-3);
-  font: 400 12px/1 var(--mono);
-  cursor: pointer;
-  transition: border-color 0.4s, color 0.4s, background 0.4s;
-}
-.flow-dots button:hover { border-color: var(--cold); color: var(--text); }
-.flow-dots button.is-past { border-color: rgba(136, 197, 217, 0.45); color: var(--text-2); }
-.flow-dots button[aria-current="step"] { border-color: var(--cold); background: var(--cold); color: var(--ink-0); }
-
-.flow-step { grid-area: step; min-height: 190px; }
-.flow-n { margin: 0 0 6px; font: 500 40px/1 var(--mono); color: var(--text-hi); letter-spacing: -0.03em; }
-.flow-n .of { margin-left: 8px; font-size: 14px; color: var(--text-3); letter-spacing: 0; }
-.flow-step h3 { margin: 14px 0 10px; font: 600 21px/1.5 var(--serif); color: var(--text-hi); }
-.flow-step p:last-child { margin: 0; font-size: 15.5px; color: var(--text-2); }
-.flow-step.is-swap h3,
-.flow-step.is-swap p:last-child { animation: swap 0.8s var(--ease-out); }
 @keyframes swap {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
 }
 
-.flow-ctrl { grid-area: ctrl; justify-self: end; align-self: start; display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
-.flow-ctrl button,
-.chip,
-.pit-btn {
+.chip {
   padding: 8px 15px;
   border: 1px solid var(--hair-3);
   border-radius: 999px;
@@ -616,43 +528,7 @@ html:not(.js) .gap-arrow { transform: none; }
   cursor: pointer;
   transition: border-color 0.4s, background 0.4s, color 0.4s;
 }
-.flow-ctrl button:hover,
-.pit-btn:hover { border-color: var(--cold); background: var(--cold-soft); }
-.flow-ctrl [data-flow="play"][aria-pressed="true"] { border-color: var(--cold); color: var(--cold); }
-
-.flow-you { grid-area: you; align-self: start; margin-top: 8px; padding-top: 18px; border-top: 1px solid var(--hair); }
-.flow-you p { margin: 0 0 8px; font: 400 12px/1 var(--mono); letter-spacing: 0.08em; color: var(--text-3); }
-.flow-you ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
-.flow-you li { position: relative; padding-left: 18px; font-size: 14.5px; color: var(--warm); animation: swap 0.8s var(--ease-out); }
-.flow-you li::before {
-  content: "";
-  position: absolute;
-  left: 2px;
-  top: 0.78em;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--warm);
-  box-shadow: 0 0 8px var(--warm);
-}
-.flow-you li.none { color: var(--text-3); }
-.flow-you li.none::before { background: transparent; border: 1px solid var(--hair-3); box-shadow: none; }
-
-.flow-list { margin: 28px 0 0; padding-left: 1.4em; color: var(--text-2); }
-.flow-list h3 { margin: 18px 0 4px; font: 600 17px/1.5 var(--serif); color: var(--text-hi); }
-.flow-list p { margin: 0; font-size: 15px; }
-.js .flow-list { display: none; }
-
-.flow-sum {
-  max-width: 760px;
-  margin: 40px 0 0;
-  padding: 22px 26px;
-  border: 1px solid rgba(230, 181, 107, 0.25);
-  border-radius: 16px;
-  background: linear-gradient(90deg, var(--warm-soft), transparent 80%);
-  font-size: 16px;
-  color: var(--text);
-}
+.chip:hover { border-color: var(--cold); background: var(--cold-soft); }
 
 /* ---------- 04 做法 ---------- */
 
@@ -678,20 +554,35 @@ html:not(.js) .gap-arrow { transform: none; }
 .acard li::before { content: ""; position: absolute; left: 2px; top: 0.92em; width: 7px; height: 1px; background: var(--cold); }
 .acard li a { margin-left: 6px; color: var(--cold); border-bottom: 1px dotted rgba(136, 197, 217, 0.5); }
 
-.pit-btn { display: none; align-self: flex-start; margin-top: auto; font-size: 13px; color: var(--text-2); }
-.js .pit-btn { display: inline-flex; align-items: center; gap: 8px; }
-.pit-btn::after { content: "+"; font-family: var(--mono); color: var(--warm); transition: transform 0.5s var(--ease); }
-.acard.open .pit-btn::after { transform: rotate(45deg); }
+/* 原生的展开/收起：<details> + 三角，和 GitHub、MDN 等站点的写法一样 */
+.pit { margin-top: auto; padding-top: 4px; }
+.pit summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+.pit summary::-webkit-details-marker { display: none; }
+.pit summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.2s;
+}
+.pit[open] summary::before { transform: rotate(90deg); }
+.pit summary:hover { color: var(--text-hi); }
 .js .acard ul { margin-bottom: 18px; }
-
-.pit { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 0.8s var(--ease); }
-.pit > div { overflow: hidden; }
-.js .acard:not(.open) .pit { grid-template-rows: 0fr; }
 .pit p {
-  margin: 14px 0 0;
+  margin: 12px 0 0;
   padding: 12px 15px;
-  border-left: 1px solid var(--warm);
-  border-radius: 0 10px 10px 0;
+  border-left: 2px solid var(--warm);
+  border-radius: 0 8px 8px 0;
   background: var(--warm-soft);
   font-size: 14.5px;
   line-height: 1.85;
@@ -811,7 +702,7 @@ html:not(.js) .fill { transform: scaleX(1); }
 .js .loop-svg { display: block; }
 .loop-ring { fill: none; stroke: var(--hair-2); stroke-width: 1; }
 .loop-ring.faint { stroke: var(--hair); stroke-dasharray: 2 7; }
-.loop-arc { fill: none; stroke: var(--cold); stroke-width: 1.8; stroke-linecap: round; filter: drop-shadow(0 0 6px rgba(136, 197, 217, 0.45)); }
+.loop-arc { fill: none; stroke: var(--cold); stroke-width: 1.8; stroke-linecap: round; }
 .loop-node { cursor: pointer; outline: none; }
 .loop-node circle { fill: var(--ink-2); stroke: var(--hair-3); stroke-width: 1.2; transition: fill 0.5s, stroke 0.5s, r 0.5s; }
 .loop-node text { font-family: var(--serif); font-size: 17px; font-weight: 600; fill: var(--text-3); transition: fill 0.5s; }
@@ -837,19 +728,18 @@ html:not(.js) .fill { transform: scaleX(1); }
 .minor { margin: 72px 0 14px; font: 600 19px/1.5 var(--serif); color: var(--text-hi); }
 
 .principles { display: grid; grid-template-columns: 1fr 1fr; gap: 0 36px; margin: 0; padding: 0; list-style: none; counter-reset: pr; }
+/* li 里是「加粗标题 + 一段文字」的混排，不能做成 grid：文字节点会被单独塞进编号那一列 */
 .principles li {
   counter-increment: pr;
-  display: grid;
-  grid-template-columns: 36px 1fr;
-  gap: 6px;
-  padding: 16px 0;
+  position: relative;
+  padding: 16px 0 16px 42px;
   border-top: 1px solid var(--hair);
   font-size: 15px;
   line-height: 1.85;
   color: var(--text-2);
 }
-.principles li::before { content: counter(pr, decimal-leading-zero); font: 400 12px/2.2 var(--mono); color: var(--cold); }
-.principles b { font-weight: 500; color: var(--text-hi); }
+.principles li::before { content: counter(pr, decimal-leading-zero); position: absolute; left: 0; top: 16px; font: 400 12px/2.2 var(--mono); color: var(--cold); }
+.principles b { display: block; font-weight: 500; color: var(--text-hi); }
 
 /* ---------- 07 数据 ---------- */
 
@@ -1019,12 +909,19 @@ html:not(.js) .split span { transform: scaleX(1); }
   margin: 0 auto;
   padding: 28px 0 48px;
   border-top: 1px solid var(--hair);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
   font-size: 12.5px;
   line-height: 1.8;
   color: var(--text-3);
 }
-.foot p { margin: 0 0 4px; }
-.foot p:first-child { font-family: var(--mono); color: var(--text-2); }
+.foot p { margin: 0 0 4px; max-width: 760px; }
+.foot p:first-child { color: var(--text-2); }
+.foot a { color: var(--text-2); text-decoration: underline; text-underline-offset: 3px; }
+.foot a:hover { color: var(--text-hi); }
+.foot .gh { flex: none; text-decoration: none; }
 
 /* ---------- 窄屏 ---------- */
 
@@ -1045,13 +942,9 @@ html:not(.js) .split span { transform: scaleX(1); }
 }
 
 @media (max-width: 760px) {
-  .js .flow-panel { grid-template-columns: 1fr; grid-template-areas: "dots" "step" "ctrl" "you"; }
-  .flow-ctrl { justify-self: start; }
-  .flow-step { min-height: 0; }
-  .flow-you { margin-top: 24px; }
   body { font-size: 16px; }
   .topnav { gap: 18px; }
-  .topnav a:not(.ext),
+  .topnav a:not(.gh):not([href$=".html"]),
   .brand-en { display: none; }
   .lines2,
   .cards,

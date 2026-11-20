@@ -1,0 +1,110 @@
+/* 「一个上午，三件事」分步演示。颜色都走变量，主页（深色）和文章网页版（浅色、深色）各自覆盖 */
+.mn {
+  --mn-fg: #e6edf6;
+  --mn-text: #b9c6d6;
+  --mn-muted: #7f90a6;
+  --mn-line: rgba(148, 178, 216, 0.28);
+  --mn-hair: rgba(148, 178, 216, 0.14);
+  --mn-node: rgba(10, 20, 34, 0.94);
+  --mn-node-on: rgba(16, 36, 62, 0.98);
+  --mn-cold: #88c5d9;
+  --mn-warm: #e6b56b;
+  --mn-warm-soft: rgba(230, 181, 107, 0.12);
+  --mn-panel: rgba(9, 18, 32, 0.5);
+  --mn-btn-on-fg: #04070d;
+  display: block;
+}
+
+.mn-stage {
+  overflow-x: auto;
+  border: 1px solid var(--mn-hair);
+  border-radius: 14px;
+  background: var(--mn-panel);
+}
+.mn-svg { display: block; width: 100%; min-width: 720px; height: auto; font-family: inherit; }
+
+.mn-arrow { fill: none; stroke: var(--mn-line); stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.mn-bands text { font-size: 13px; fill: var(--mn-muted); letter-spacing: 0.06em; }
+.mn-bands line { stroke: var(--mn-hair); stroke-dasharray: 3 6; }
+
+.mn-edge { fill: none; stroke: var(--mn-line); stroke-width: 1.3; transition: stroke 0.4s, stroke-width 0.4s; }
+.mn-edge.is-live,
+.mn-edge.is-done { stroke: var(--mn-cold); stroke-width: 1.8; }
+.mn-edge.warm { stroke: var(--mn-warm); }
+.mn-label { font-size: 13px; fill: var(--mn-muted); transition: fill 0.4s; }
+.mn-label.is-on { fill: var(--mn-fg); }
+
+.mn-node rect { fill: var(--mn-node); stroke: var(--mn-line); stroke-width: 1.2; transition: fill 0.4s, stroke 0.4s; }
+.mn-node.store rect { stroke-dasharray: none; }
+.mn-node.ext rect,
+.mn-node.log rect { stroke-dasharray: 4 5; }
+.mn-node .t { font-size: 17px; font-weight: 600; fill: var(--mn-text); transition: fill 0.4s; }
+.mn-node .s { font-size: 12.5px; fill: var(--mn-muted); }
+.mn-node.is-on rect { fill: var(--mn-node-on); stroke: var(--mn-cold); }
+.mn-node.is-on .t { fill: var(--mn-fg); }
+.mn-node.owner.is-on rect { animation: mn-work 2.4s ease-in-out infinite; }
+@keyframes mn-work { 50% { stroke-opacity: 0.45; } }
+.mn-node.you .core { fill: var(--mn-warm-soft); stroke: var(--mn-warm); stroke-width: 1.4; }
+.mn-node.you .halo { fill: var(--mn-warm); opacity: 0; transition: opacity 0.4s; }
+.mn-node.you.is-on .halo { opacity: 0.14; }
+.mn-node.you .t { fill: var(--mn-warm); font-size: 19px; }
+
+.mn-token { fill: var(--mn-cold); }
+.mn-token.warm { fill: var(--mn-warm); }
+
+.mn-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 20px 0 18px; }
+.mn-dots { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.mn-dots button,
+.mn-ctrl button {
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.2;
+  color: var(--mn-text);
+  background: transparent;
+  border: 1px solid var(--mn-line);
+  cursor: pointer;
+  transition: border-color 0.3s, background 0.3s, color 0.3s;
+}
+.mn-dots button { width: 30px; height: 30px; border-radius: 50%; padding: 0; }
+.mn-dots button.is-past { border-color: var(--mn-cold); color: var(--mn-cold); }
+.mn-dots button[aria-current="step"] { background: var(--mn-cold); border-color: var(--mn-cold); color: var(--mn-btn-on-fg); }
+.mn-ctrl { display: flex; gap: 8px; }
+.mn-ctrl button { padding: 7px 14px; border-radius: 8px; }
+.mn-dots button:hover,
+.mn-ctrl button:hover { border-color: var(--mn-cold); }
+.mn-ctrl [aria-pressed="true"] { border-color: var(--mn-cold); color: var(--mn-cold); }
+
+.mn-body { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(220px, 1fr); gap: 36px; }
+.mn-step { min-height: 200px; }
+.mn-time { display: flex; gap: 14px; align-items: baseline; margin: 0 0 6px; font-size: 13px; color: var(--mn-muted); font-variant-numeric: tabular-nums; }
+.mn-clock { color: var(--mn-cold); }
+.mn-title { margin: 0 0 10px; font-size: 20px; line-height: 1.5; color: var(--mn-fg); }
+.mn-text { margin: 0; font-size: 15.5px; line-height: 1.9; color: var(--mn-text); }
+.mn-step.is-swap .mn-title,
+.mn-step.is-swap .mn-text { animation: mn-swap 0.6s ease-out; }
+@keyframes mn-swap { from { opacity: 0; transform: translateY(6px); } }
+
+.mn-tally { display: grid; gap: 18px; align-content: start; }
+.mn-tally p { margin: 0 0 8px; font-size: 12.5px; letter-spacing: 0.06em; color: var(--mn-muted); }
+.mn-tally ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.mn-tally li { position: relative; padding-left: 16px; font-size: 14.5px; line-height: 1.6; }
+.mn-tally li::before { content: ""; position: absolute; left: 1px; top: 0.62em; width: 7px; height: 7px; border-radius: 50%; }
+.mn-with li { color: var(--mn-warm); }
+.mn-with li::before { background: var(--mn-warm); }
+.mn-with li.none { color: var(--mn-muted); }
+.mn-with li.none::before { background: transparent; border: 1px solid var(--mn-line); }
+.mn-without { padding-top: 14px; border-top: 1px solid var(--mn-hair); }
+.mn-without li { color: var(--mn-muted); text-decoration: line-through; text-decoration-color: var(--mn-line); }
+.mn-without li::before { background: var(--mn-line); }
+
+.mn-note { margin: 18px 0 0; font-size: 12.5px; color: var(--mn-muted); }
+
+@media (max-width: 760px) {
+  .mn-body { grid-template-columns: 1fr; gap: 20px; }
+  .mn-step { min-height: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mn-node.owner.is-on rect,
+  .mn-step.is-swap .mn-title,
+  .mn-step.is-swap .mn-text { animation: none; }
+}

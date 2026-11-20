@@ -96,11 +96,14 @@
     const events = [];
     const owners = [0, 1, 2, 3].map((i) => ({ a: (i * TAU) / 4 + 0.55, pulse: 0 }));
 
+    // 画布是整屏的：高分屏上按设备像素画会有上千万像素，每帧重画就卡。像素数封顶，光晕本来就是软的，看不出差别
+    const MAX_PIXELS = 2_400_000;
+    let bg = null; // 不动的几圈，只在尺寸变化时画一次
     const size = () => {
       const r = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       W = r.width;
       H = r.height;
+      const dpr = Math.max(0.75, Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(MAX_PIXELS / Math.max(1, W * H))));
       canvas.width = Math.round(W * dpr);
       canvas.height = Math.round(H * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -109,6 +112,18 @@
       cy = wide ? H * 0.5 : H * 0.24;
       ring = Math.max(58, Math.min(W, H) * (wide ? 0.15 : 0.14));
       far = Math.hypot(Math.max(cx, W - cx), Math.max(cy, H - cy)) + 30;
+      bg = document.createElement("canvas");
+      bg.width = canvas.width;
+      bg.height = canvas.height;
+      const b = bg.getContext("2d");
+      b.setTransform(dpr, 0, 0, dpr, 0, 0);
+      b.lineWidth = 1;
+      for (const [k, a] of [[0.55, 0.05], [2.7, 0.035], [3.9, 0.026], [5.3, 0.018]]) {
+        b.strokeStyle = `rgba(148,178,216,${a})`;
+        b.beginPath();
+        b.arc(cx, cy, ring * k, 0, TAU);
+        b.stroke();
+      }
     };
 
     const ownerPos = (o) => ({ x: cx + Math.cos(o.a) * ring * 1.85, y: cy + Math.sin(o.a) * ring * 1.85 });
@@ -196,15 +211,26 @@
       while (events.length && events[0].t < t - 12) events.shift();
     };
 
+    // 光晕先画成一张小图，每帧只缩放贴上去，不再每帧新建渐变
+    const sprite = (rgb) => {
+      const c = document.createElement("canvas");
+      c.width = c.height = 128;
+      const g = c.getContext("2d");
+      const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+      grad.addColorStop(0, `rgba(${rgb},1)`);
+      grad.addColorStop(1, `rgba(${rgb},0)`);
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 128, 128);
+      return c;
+    };
+    const COLD = "136,197,217";
+    const WARM = "230,181,107";
+    const SPRITE = { [COLD]: sprite(COLD), [WARM]: sprite(WARM) };
     const glow = (x, y, r, rgb, a) => {
       if (r <= 0 || a <= 0) return;
-      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-      g.addColorStop(0, `rgba(${rgb},${a})`);
-      g.addColorStop(1, `rgba(${rgb},0)`);
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, TAU);
-      ctx.fill();
+      ctx.globalAlpha = Math.min(1, a);
+      ctx.drawImage(SPRITE[rgb], x - r, y - r, r * 2, r * 2);
+      ctx.globalAlpha = 1;
     };
     const dot = (x, y, r, color) => {
       ctx.fillStyle = color;
@@ -212,19 +238,21 @@
       ctx.arc(x, y, r, 0, TAU);
       ctx.fill();
     };
-    const COLD = "136,197,217";
-    const WARM = "230,181,107";
+    const line = (x0, y0, x1, y1, color, w) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = w;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    };
 
     const draw = () => {
       ctx.clearRect(0, 0, W, H);
-      // 背景的几圈：注意力的半径
-      ctx.lineWidth = 1;
-      for (const [k, a] of [[0.55, 0.05], [2.7, 0.035], [3.9, 0.026], [5.3, 0.018]]) {
-        ctx.strokeStyle = `rgba(148,178,216,${a})`;
-        ctx.beginPath();
-        ctx.arc(cx, cy, ring * k, 0, TAU);
-        ctx.stroke();
-      }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(bg, 0, 0);
+      const k = canvas.width / W;
+      ctx.setTransform(k, 0, 0, k, 0, 0);
       // 调度台：一圈细环，外面是负责 agent 的轨道
       if (deskA > 0.01) {
         ctx.strokeStyle = `rgba(${COLD},${0.42 * deskA})`;
@@ -260,16 +288,13 @@
           tx = cx + Math.cos(ta) * (p.r + tail);
           ty = cy + Math.sin(ta) * (p.r + tail);
         }
+        // 尾迹分两段画，远的一段更淡，代替逐个粒子的线性渐变
         const rgb = p.warm ? WARM : COLD;
-        const g = ctx.createLinearGradient(tx, ty, p.x, p.y);
-        g.addColorStop(0, `rgba(${rgb},0)`);
-        g.addColorStop(1, `rgba(${rgb},${alpha})`);
-        ctx.strokeStyle = g;
-        ctx.lineWidth = p.warm ? 1.7 : 1.1;
-        ctx.beginPath();
-        ctx.moveTo(tx, ty);
-        ctx.lineTo(p.x, p.y);
-        ctx.stroke();
+        const w = p.warm ? 1.7 : 1.1;
+        const mx = (tx + p.x) / 2;
+        const my = (ty + p.y) / 2;
+        line(tx, ty, mx, my, `rgba(${rgb},${alpha * 0.22})`, w);
+        line(mx, my, p.x, p.y, `rgba(${rgb},${alpha * 0.7})`, w);
         dot(p.x, p.y, p.warm ? 1.9 : 1.3, `rgba(${p.warm ? "244,206,146" : "190,230,242"},${alpha})`);
       }
       for (const s of sparks) glow(s.x, s.y, 4 + 10 * (1 - s.life), COLD, 0.4 * s.life);
@@ -320,14 +345,17 @@
       describe();
     };
 
+    // 动得慢，30 帧左右就够；高刷屏上不跟着跑 120 帧
+    const FRAME_MS = 1000 / 30 - 2;
     const frame = (now) => {
-      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+      raf = requestAnimationFrame(frame);
+      if (now - last < FRAME_MS) return;
+      const dt = Math.min(0.08, Math.max(0, (now - last) / 1000));
       last = now;
       step(dt);
       draw();
       readT += dt;
       if (readT > 0.5) { readT = 0; describe(); }
-      raf = requestAnimationFrame(frame);
     };
     const start = () => {
       if (running || reduce) return;
@@ -373,162 +401,6 @@
     requestAnimationFrame(() => canvas.classList.add("is-ready"));
   }
 
-  /* ---------- 跟着一条消息走一遍 ---------- */
-  function flow() {
-    const svg = $(".flow-svg");
-    const list = $$(".flow-list > li");
-    if (!svg || !list.length) return;
-    const steps = list.map((li) => ({
-      title: $("h3", li).textContent,
-      text: $("p", li).textContent,
-      on: (li.dataset.on || "").split(/\s+/).filter(Boolean),
-      run: (li.dataset.run || "").split(/\s+/).filter(Boolean).map((s) => {
-        const [id, dir, tone] = s.split(":");
-        return { path: svg.querySelector(`#${id}`), dir: Number(dir || 1), warm: tone === "warm" };
-      }),
-      you: li.dataset.you || "",
-    }));
-    const nodes = $$(".node", svg);
-    const edges = $$(".edge", svg);
-    const labels = $$(".elabel", svg);
-    const token = $(".token", svg);
-    const halo = $(".token-halo", svg);
-    const box = $(".flow-step");
-    const nEl = $("[data-flow-n]");
-    const tEl = $("[data-flow-title]");
-    const xEl = $("[data-flow-text]");
-    const youEl = $("[data-flow-you]");
-    const dots = $$(".flow-dots button");
-    const playBtn = $('[data-flow="play"]');
-    let cur = -1;
-    let runId = 0;
-    let playing = false;
-    let timer = 0;
-
-    const hideToken = () => {
-      token.style.opacity = "0";
-      halo.style.opacity = "0";
-    };
-    // 窄屏上图比屏幕宽，只能横向滚动：让视口跟着消息走
-    const stage = $(".flow-stage");
-    const follow = (x) => {
-      const over = stage.scrollWidth - stage.clientWidth;
-      if (over <= 0) return;
-      const k = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
-      stage.scrollLeft = Math.max(0, Math.min(over, x * k - stage.clientWidth / 2));
-    };
-    const travel = (path, dir, warm, id) => new Promise((done) => {
-      const len = path.getTotalLength();
-      const dur = Math.max(700, len * 3.4);
-      const t0 = performance.now();
-      token.classList.toggle("warm", warm);
-      halo.classList.toggle("warm", warm);
-      token.style.opacity = "1";
-      halo.style.opacity = "0.55";
-      const tick = (now) => {
-        if (id !== runId) return done();
-        const p = Math.min(1, (now - t0) / dur);
-        const pt = path.getPointAtLength((dir > 0 ? easeInOut(p) : 1 - easeInOut(p)) * len);
-        token.setAttribute("cx", pt.x);
-        token.setAttribute("cy", pt.y);
-        halo.setAttribute("cx", pt.x);
-        halo.setAttribute("cy", pt.y);
-        follow(pt.x);
-        if (p < 1) requestAnimationFrame(tick);
-        else done();
-      };
-      requestAnimationFrame(tick);
-    });
-
-    const setPlay = (on) => {
-      playing = on;
-      playBtn.setAttribute("aria-pressed", String(on));
-      playBtn.textContent = on ? "暂停" : "自动播放";
-      if (!on) clearTimeout(timer);
-    };
-
-    const show = async (i) => {
-      clearTimeout(timer);
-      cur = (i + steps.length) % steps.length;
-      const id = ++runId;
-      const s = steps[cur];
-      nEl.textContent = String(cur + 1);
-      tEl.textContent = s.title;
-      xEl.textContent = s.text;
-      box.classList.remove("is-swap");
-      void box.offsetWidth;
-      box.classList.add("is-swap");
-      dots.forEach((d, k) => {
-        d.setAttribute("aria-current", k === cur ? "step" : "false");
-        d.classList.toggle("is-past", k < cur);
-      });
-      nodes.forEach((n) => n.classList.toggle("is-on", s.on.includes(n.dataset.node)));
-      edges.forEach((e) => e.classList.remove("is-live", "is-done", "warm"));
-      const ids = s.run.map((r) => r.path && r.path.id);
-      labels.forEach((l) => l.classList.toggle("is-on", ids.includes(l.dataset.for)));
-      const spent = steps.slice(0, cur + 1).filter((x) => x.you);
-      youEl.innerHTML = "";
-      if (!spent.length) youEl.insertAdjacentHTML("beforeend", '<li class="none">还没有</li>');
-      for (const x of spent) {
-        const li = document.createElement("li");
-        li.textContent = x.you;
-        youEl.append(li);
-      }
-      hideToken();
-      if (reduce) {
-        for (const r of s.run) if (r.path) r.path.classList.add("is-done", ...(r.warm ? ["warm"] : []));
-        const first = s.run.find((r) => r.path);
-        if (first) follow(first.path.getPointAtLength(first.path.getTotalLength() / 2).x);
-        return;
-      }
-      for (const r of s.run) {
-        if (id !== runId) return;
-        if (!r.path) continue;
-        r.path.classList.add("is-live");
-        r.path.classList.toggle("warm", r.warm);
-        await travel(r.path, r.dir, r.warm, id);
-        if (id !== runId) return;
-        r.path.classList.remove("is-live");
-        r.path.classList.add("is-done");
-      }
-      hideToken();
-      if (!playing) return;
-      if (cur === steps.length - 1) setPlay(false);
-      else timer = setTimeout(() => show(cur + 1), 2400);
-    };
-
-    $('[data-flow="prev"]').addEventListener("click", () => { setPlay(false); show(cur - 1); });
-    $('[data-flow="next"]').addEventListener("click", () => { setPlay(false); show(cur + 1); });
-    playBtn.addEventListener("click", () => {
-      if (playing) { setPlay(false); return; }
-      setPlay(true);
-      show(cur >= steps.length - 1 ? 0 : cur + 1);
-    });
-    dots.forEach((d, k) => d.addEventListener("click", () => { setPlay(false); show(k); }));
-    $(".flow").addEventListener("keydown", (e) => {
-      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-      e.preventDefault();
-      setPlay(false);
-      show(cur + (e.key === "ArrowRight" ? 1 : -1));
-    });
-
-    show(0);
-    if (!reduce) {
-      // 第一次滚到这里时自己播一遍
-      watch([$(".flow")], () => { setPlay(true); show(0); }, { threshold: 0.45 });
-    }
-  }
-
-  /* ---------- 做法：踩过的坑 ---------- */
-  function pits() {
-    $$(".acard .pit-btn").forEach((b) => b.addEventListener("click", () => {
-      const card = b.closest(".acard");
-      const open = !card.classList.contains("open");
-      card.classList.toggle("open", open);
-      b.setAttribute("aria-expanded", String(open));
-    }));
-  }
-
   /* ---------- 界面示意 ---------- */
   function term() {
     const box = $(".term");
@@ -552,9 +424,9 @@
       typed.textContent = "";
       const lines = [
         ["tl you", `› ${text}`],
-        // 和插件的真实标头一致：交给了负责 agent 就是「交出」，没交出去就是「回答」
-        ["tl head", yes ? "━━━ 📤 交出 · 导出超时 ━━━" : "━━━ 💬 回答 ━━━"],
-        ["tl", yes ? "记下了：回复同事。已交给负责 agent，去 thread 里回复并附上 PR 链接。" : "记下了：先不回复。任务照常收尾。"],
+        // 和插件的真实标头一致：这一轮把活交给了哪些任务，就写「交出 · 任务、任务」
+        ["tl head", yes ? "━━━ 📤 交出 · 周报口径、导出超时 ━━━" : "━━━ 📤 交出 · 周报口径 ━━━"],
+        ["tl", yes ? "记下两个决定：周报按自然周；回复同事。已交给两个负责 agent。" : "记下两个决定：周报按自然周；先不回复同事。已交给周报的负责 agent。"],
       ];
       for (const [cls, s] of lines) {
         const p = document.createElement("p");
@@ -707,8 +579,6 @@
 
   ticks();
   field();
-  flow();
-  pits();
   term();
   loop();
   revealAll();
