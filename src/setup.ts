@@ -1,9 +1,8 @@
-import { execFile } from "node:child_process";
 import { constants, copyFileSync, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
-import type { Secret, SlackConfig } from "../sources/config";
+import type { FeishuAccount, FeishuConfig, Secret, SlackConfig } from "../sources/config";
+import { type Lark, type Projects, runLark } from "./feishu";
 import { CONFIG } from "./paths";
 import { writeAtomic } from "./table";
 
@@ -16,9 +15,10 @@ export interface SetupUI {
 }
 
 interface Group { name: string; line?: string }
-interface FeishuAccount { profile: string; realtime: boolean; groups: Record<string, Group> }
+
 interface DeskConfig extends Record<string, unknown> {
-	feishu?: { accounts: FeishuAccount[] };
+	feishu?: FeishuConfig;
+	projects?: Projects;
 	slack?: SlackConfig;
 	triage?: { about?: string; model?: string; command?: string };
 	ado?: { org?: string };
@@ -26,20 +26,12 @@ interface DeskConfig extends Record<string, unknown> {
 }
 
 interface SetupIO {
-	lark(args: string[]): Promise<unknown>;
+	lark: Lark;
 	slack(method: string, token: string, params?: Record<string, string>): Promise<unknown>;
 }
 
-const exec = promisify(execFile);
 const io: SetupIO = {
-	async lark(args) {
-		const { stdout } = await exec("lark-cli", args, {
-			env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: "1", LARKSUITE_CLI_NO_SKILLS_NOTIFIER: "1" },
-		}).catch(err => {
-			throw new Error(String(err.stderr || err.message).trim());
-		});
-		return JSON.parse(stdout);
-	},
+	lark: runLark,
 	async slack(method, token, params) {
 		const res = await fetch(`https://slack.com/api/${method}?${new URLSearchParams(params)}`, {
 			method: method === "auth.test" ? "POST" : "GET",
@@ -54,7 +46,7 @@ export function readConfig(path = CONFIG): DeskConfig {
 	return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
 }
 
-export const hasFeishu = (cfg: DeskConfig): boolean => !!cfg.feishu?.accounts?.length;
+export const hasFeishu = (cfg: DeskConfig): boolean => !!cfg.feishu?.accounts?.some(account => account.bot || account.poll);
 
 const DONE = "完成";
 const BACK = "返回";
@@ -76,7 +68,7 @@ async function configureTriage(ui: SetupUI, cfg: DeskConfig) {
 	}
 }
 
-// 两种消息源用同一个勾选界面；旧配置里已选但这次没列出的会话仍可移除。
+// 已选但这次没列出的频道仍可移除。
 async function pickGroups(ui: SetupUI, title: string, available: Record<string, Group>, current: Record<string, Group> = {}) {
 	const groups = { ...current };
 	const entries = Object.entries({ ...current, ...available });
@@ -117,7 +109,10 @@ async function configureFeishu(ui: SetupUI, cfg: DeskConfig, lark: SetupIO["lark
 			ui.notify(String(err), "error");
 		}
 	}
-	if (accounts.size || cfg.feishu) cfg.feishu = { ...cfg.feishu, accounts: [...accounts.values()] };
+	if (accounts.size || cfg.feishu) cfg.feishu = { accounts: [...accounts.values()] };
+	for (const [path, binding] of Object.entries(cfg.projects ?? {})) {
+		if (!accounts.has(binding.feishu)) delete cfg.projects?.[path];
+	}
 }
 
 async function configureFeishuAccount(ui: SetupUI, lark: SetupIO["lark"], profile: string, current?: FeishuAccount) {
@@ -129,32 +124,31 @@ async function configureFeishuAccount(ui: SetupUI, lark: SetupIO["lark"], profil
 	ui.notify(`飞书 · ${profile}：user ${user ?? "未知"}，bot ${bot ?? "未知"}`, "info");
 	if (user !== "ready") {
 		const quoted = `'${profile.replace(/'/g, "'\\''")}'`;
-		ui.notify(`请先运行 lark-cli --profile ${quoted} auth login --scope 'im:chat:read im:message:readonly search:message'`, "warning");
+		ui.notify(`请先运行 lark-cli --profile ${quoted} auth login --domain im,contact --scope search:message`, "warning");
+	}
+	if (bot !== "ready") ui.notify(`飞书 · ${profile}：请在飞书开发者后台检查机器人配置`, "warning");
+	const toggle = (title: string, enabled: boolean) => ui.select(`飞书 · ${profile} · ${title}`, enabled ? ["开启", "关闭"] : ["关闭", "开启"]);
+	const botChoice = await toggle("机器人入口（长连接）", current?.bot ?? true);
+	if (botChoice === undefined) return;
+	const pollChoice = await toggle("用户身份补读", current?.poll ?? false);
+	if (pollChoice === undefined) return;
+	return { profile, bot: botChoice === "开启", poll: pollChoice === "开启" };
+}
+
+async function configureProject(ui: SetupUI, cfg: DeskConfig, cwd: string) {
+	const dir = await field(ui, "项目目录", cwd);
+	if (dir === undefined) return;
+	const path = dir.startsWith("~/") ? join(homedir(), dir.slice(2)) : resolve(cwd, dir);
+	const profiles = (cfg.feishu?.accounts ?? []).map(account => account.profile);
+	const current = cfg.projects?.[path]?.feishu;
+	if (!profiles.length && !current) {
+		ui.notify("请先添加飞书账号。", "warning");
 		return;
 	}
-	const available: Record<string, Group> = {};
-	let pageToken: string | undefined;
-	do {
-		const args = ["--profile", profile, "im", "+chat-list", "--as", "user", "--types", "group", "--page-size", "100", "--format", "json"];
-		if (pageToken) args.push("--page-token", pageToken);
-		const page = await lark(args) as { ok: boolean; data: { chats: Array<{ chat_id: string; name: string }>; has_more: boolean; page_token?: string } };
-		if (!page.ok) throw new Error(`飞书 · ${profile}：读取群列表失败`);
-		for (const chat of page.data.chats) available[chat.chat_id] = { name: chat.name };
-		pageToken = page.data.has_more ? page.data.page_token : undefined;
-	} while (pageToken);
-	const groups = await pickGroups(ui, `飞书 · ${profile} · 要读的群`, available, current?.groups);
-	if (!groups) return;
-	let realtime = false;
-	if (bot === "ready") {
-		const enable = "开启";
-		const disable = "关闭";
-		const selected = await ui.select(`飞书 · ${profile} · 机器人实时推送`, current?.realtime ? [enable, disable] : [disable, enable]);
-		if (selected === undefined) return;
-		realtime = selected === enable;
-	} else {
-		ui.notify(`飞书 · ${profile}：bot 身份未就绪，仅启用定时补读`, "warning");
-	}
-	return { ...current, profile, realtime, groups };
+	const options = profiles.map(profile => `绑定 ${profile}`);
+	const choice = await ui.select(`项目绑定 · ${path}${current ? ` · 当前 ${current}` : ""}`, [...options, ...(current ? ["解绑"] : []), BACK]);
+	if (choice === "解绑") delete cfg.projects?.[path];
+	else if (choice !== undefined && choice !== BACK) (cfg.projects ??= {})[path] = { feishu: profiles[options.indexOf(choice)] };
 }
 
 async function secretFile(ui: SetupUI, title: string, current?: Secret): Promise<Secret | undefined> {
@@ -199,16 +193,17 @@ async function configureSlack(ui: SetupUI, cfg: DeskConfig, slack: SetupIO["slac
 	if (channels) cfg.slack = { ...current, domain, user_token, app_token, me: auth.user_id, channels };
 }
 
-export async function runSetup(ui: SetupUI, path = CONFIG, deps = io): Promise<boolean> {
+export async function runSetup(ui: SetupUI, { path = CONFIG, deps = io, cwd = process.cwd() } = {}): Promise<boolean> {
 	const cfg = readConfig(path);
 	const before = JSON.stringify(cfg);
 	for (;;) {
-		const choice = await ui.select("调度配置：选择要配置的部分", ["分拣", "飞书", "Slack", DONE]);
+		const choice = await ui.select("调度配置：选择要配置的部分", ["分拣", "飞书", "项目绑定", "Slack", DONE]);
 		if (choice === undefined) return false;
 		if (choice === DONE) break;
 		try {
 			if (choice === "分拣") await configureTriage(ui, cfg);
 			else if (choice === "飞书") await configureFeishu(ui, cfg, deps.lark);
+			else if (choice === "项目绑定") await configureProject(ui, cfg, cwd);
 			else if (choice === "Slack") await configureSlack(ui, cfg, deps.slack);
 		} catch (err) {
 			ui.notify(String(err), "error");
@@ -230,8 +225,8 @@ export async function runSetup(ui: SetupUI, path = CONFIG, deps = io): Promise<b
 	const deploy = ["PR 补读"];
 	if (cfg.reminders) deploy.push("到期提醒");
 	if (cfg.slack) deploy.push("Slack 补读、实时推送");
-	if (hasFeishu(cfg)) deploy.push("飞书补读");
-	if (cfg.feishu?.accounts?.some(a => a.realtime)) deploy.push("飞书实时推送");
+	if (cfg.feishu?.accounts?.some(a => a.poll)) deploy.push("飞书补读");
+	if (cfg.feishu?.accounts?.some(a => a.bot)) deploy.push("飞书机器人长连接");
 	ui.notify(`需部署：${deploy.join("、")}。请在插件仓库运行 bun scripts/install.ts。`, "info");
 	return changed;
 }

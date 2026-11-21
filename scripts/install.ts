@@ -88,11 +88,10 @@ async function install(rl?: Interface) {
 	}
 
 	const config = readConfig();
-	const feishu = hasFeishu(config);
-	if (feishu && !lark && !DRY) throw new Error("飞书已配置，请先安装 lark-cli 再部署。");
+	if (hasFeishu(config) && !lark && !DRY) throw new Error("飞书已配置，请先安装 lark-cli 再部署。");
 	const cronPaths = [dirname(omp), dirname(gh), dirname(python3), ...(lark ? [dirname(lark)] : []), "/usr/local/bin", "/usr/bin", "/bin"];
 	const path = [...new Set(cronPaths)].join(":");
-	const pollers = ["pr", ...(config.reminders ? ["reminders"] : []), ...(config.slack ? ["slack"] : []), ...(feishu ? ["feishu"] : [])];
+	const pollers = ["pr", ...(config.reminders ? ["reminders"] : []), ...(config.slack ? ["slack"] : []), ...(config.feishu?.accounts?.some(a => a.poll) ? ["feishu"] : [])];
 	const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 	// cron 不保留输出：每个轮询追加到数据目录 logs/ 下自己的日志，出错时有处可查
 	const logs = join(DATA, "logs");
@@ -113,7 +112,7 @@ async function install(rl?: Interface) {
 	}
 
 	const units = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "systemd", "user");
-	const enabled = { slack: !!config.slack, feishu: !!config.feishu?.accounts?.some(a => a.realtime) };
+	const enabled = { slack: !!config.slack, feishu: !!config.feishu?.accounts?.some(a => a.bot) };
 	for (const [source, active] of Object.entries(enabled)) {
 		const name = `dispatch-desk-${source}.service`;
 		const file = join(units, name);

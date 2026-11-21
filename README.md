@@ -126,7 +126,9 @@ bun scripts/install.ts
 | `state/watch.json` | 未完成任务的监听范围和分拣用的任务摘要，由插件写给各消息源 |
 | `state/feishu-cursor-<profile>.json` | 飞书补读的会话与 @我 游标，每个 profile 一份 |
 | `state/health/feishu-poll.json`、`state/health/feishu-socket.json` | 飞书补读和实时推送的健康状态 |
+| `state/feishu-owner-chat.json` | 按 profile 记录使用者与机器人的单聊，用于推送待决定事项 |
 | `inbox/new/`、`inbox/claimed/` | 外部消息：会话外的程序写进 `new/`，认领后移到 `claimed/` |
+| `inbox/operator/new/`、`inbox/operator/claimed/` | 使用者发给飞书机器人的指令，由绑定了对应账号的调度会话认领 |
 | `lines/<任务>/rules.md` | 每个任务的低风险写入白名单、禁区 |
 | `rules.md` | 你自己的补充规则，接在插件规则后面注入 |
 | `config.json` | `rules` 段是规则参数；其余是外部消息源的配置，见 `config.example.json` |
@@ -164,8 +166,8 @@ bun scripts/install.ts
 |---|---|---|
 | `slack_socket.ts` | Slack 实时推送（Socket Mode）：配置里关注的频道、未完成任务登记要盯的频道和 thread、发给你的私信、@ 你的消息。配了分拣时，没归到任务的频道里不紧急的消息留给定时补读去分拣。每 30 秒发一次心跳，90 秒没回音就重连（切 VPN、机器休眠后连接会悄悄死掉） | 常驻，见 `deploy/dispatch-desk-slack.service` |
 | `slack_poll.py` | 给实时推送兜底，补读配置里关注的频道，和未完成任务登记要盯的频道、私信、thread；配了分拣时，没归到任务的频道里不紧急的消息先分拣（见下） | 每 5 分钟，见 `deploy/crontab.example` |
-| `feishu_socket.ts` | 飞书实时推送：按启用了实时推送的 profile 接收机器人所在群的消息；需分拣的消息留给补读 | 常驻，见 `deploy/dispatch-desk-feishu.service` |
-| `feishu_poll.py` | 按 profile 补读指定群、已登记且可访问的会话、私聊和 @你的消息；需要时先分拣 | 每 5 分钟，见 `deploy/crontab.example` |
+| `feishu_socket.ts` | 飞书机器人长连接：收使用者指令和任务登记的群消息 | 常驻，见 `deploy/dispatch-desk-feishu.service` |
+| `feishu_poll.py` | 用 user 身份补读私聊、点名 @你和任务登记且可访问的会话 | 每 5 分钟，见 `deploy/crontab.example` |
 | `pr_poll.py` | 你开着的 PR、未完成任务登记要盯的 PR（别人开的也算）有新评论、review、投票（GitHub 走 `gh`，Azure DevOps 走 `az`） | 每 5 分钟 |
 | `reminders_poll.py` | 提醒文件里到期的条目，每天一次。`due` 写日期（当天第一次检查就提醒）或带时刻（`2026-11-18 16:30`，本机时间，到点后的第一次检查提醒，最多晚一个周期）。写错的条目（缺字段等）只跳过那一条，并报成故障 | 每 5 分钟 |
 
@@ -175,17 +177,18 @@ Slack 需要一个开了 Socket Mode 的 Slack App：app-level token（`connecti
 
 ### 飞书
 
-1. 每个租户先用 `lark-cli` 配一个 profile，`lark-cli profile list` 查看已有账号。定时补读用 `user` 身份：应用开通 `im:chat:read`（列会话）、`im:message:readonly`（读消息）和 `search:message`（查 @我），再让使用者通过向导提示的 `lark-cli --profile … auth login` 完成用户授权。
-2. 用 `/调度配置` 选择 profile 和要读的群，必要时给群填任务名。多个租户可同时配置。私聊和 @你的消息不需要选群，靠 user 身份补读，正常运行时最多晚 5 分钟。
-3. 如需实时推送，在飞书开发者后台启用机器人和长连接，订阅 [`im.message.receive_v1`](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive)，开通 `im:message.p2p_msg:readonly`（`lark-cli` 事件消费所需）和 `im:message.group_msg`（群消息），并给 bot 开通 `im:message:readonly` 以按 ID 补取消息链接。把机器人加入要实时监听的群，再在向导开启该 profile 的实时推送。机器人只看得到它所在的群；同一应用全局只能有一条 `lark-cli` 事件总线，其他机器已在消费时不要重复启动。
+1. 每个租户用 `lark-cli` 配一个 profile，运行 `lark-cli profile list` 查看账号。使用者须登录该 profile，机器人用同一应用识别使用者本人。
+2. 在飞书开发者后台启用机器人和长连接，订阅 [`im.message.receive_v1`](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive)。开通 `im:message.p2p_msg:readonly`（收机器人私聊）、`im:message.group_msg`（收群消息）、`im:message:readonly`（补取消息链接）和 `im:message:send_as_bot`（回复和推送）。需要在群里对话或监听时，把机器人加入该群。同一应用只能有一条事件总线。
+3. 在仓库目录打开 omp，运行 `/调度配置`，在「飞书」里选 profile 并开启「机器人入口」，再在「项目绑定」里把仓库目录绑定到该账号。目录绑定默认取当前仓库根目录，可以修改或解绑；子目录按匹配的最长路径选账号。保存后运行安装程序部署机器人长连接，然后在目标会话打开 `/调度`。
+4. 私聊机器人，或在群里 @机器人，就能向该会话发话。这一轮的最终回复会回到原消息；在终端发话不会回飞书。你至少私聊机器人一次后，之后登记的「待你决定」会推送到该单聊。
 
-紧急（`urgent`）只给两类：真人发来的私聊，和点名 @你 的消息。应用（通知机器人）在私聊里发的消息不算紧急，按普通消息走分拣；@所有人 不算 @你，按它所在群的规则处理（没选这个群就不读）。
+要监控某个飞书群，把会话链接登记到任务的「要盯的外部输入」；也可以在群里 @机器人，请调度器登记当前群。登记整个会话时，普通群消息归该任务；登记带 `position` 的消息链接时，只匹配对应消息。机器人取不到消息链接时只能按会话匹配。
 
-从飞书客户端复制的消息链接通常含 `position` 参数，插件用它识别具体消息。该参数没有官方稳定性承诺；实时推送取不到消息链接时会退回会话链接。
+每个 profile 可单独开启「用户身份补读」。补读读取真人私聊、点名 @你的消息和任务登记且账号可访问的会话，间隔 5 分钟；群里的 @所有人 不算点名。应用需开通 `im:chat:read`、`im:message:readonly` 和 `search:message`，再运行 `lark-cli --profile '<profile>' auth login --domain im,contact --scope search:message` 完成用户授权。
 
 ### 分拣：没归到任务的频道，先让便宜的模型看一眼
 
-有的频道或群只是想知道动静（比如团队大群），大部分消息和你无关。勾选这类频道或群时不填任务名（`line`），再用 `/调度配置` 填分拣描述（见 `config.example.json`）：
+Slack 里只想了解动静的频道可以不填任务名（`line`），并在 `/调度配置` 里填分拣描述（见 `config.example.json`）：
 
 - `about`：你是谁（名字照聊天里显示的写）、团队做什么，模型据此判断和你相不相关。`model`：默认 `pi/smol`，即 omp 配置里的 smol 角色。`command`：omp 的路径，默认 `omp`，定时任务的 `PATH` 里要找得到。
 - 只分拣不紧急、没归到任务的消息。私信、@你、任务登记要盯的地方、写了 `line` 的频道，都不经过模型，直接送。
@@ -198,7 +201,7 @@ Slack 需要一个开了 Socket Mode 的 Slack App：app-level token（`connecti
 
 - 插件不能直接给子代理发消息，所以外部消息先到主会话，再由它交给负责 agent。
 - 没有程序读得到的盯办项（Jira 等工单、别的系统的链接）不会自动提醒，只能靠催办日期。机器休眠期间的 Slack 私信，只有登记在某个任务的盯办项里的才会补读。
-- 飞书机器人只接收所在群的消息，个人私聊和 @你 依赖 user 身份的 5 分钟补读；同一应用不能在多处同时消费事件。消息链接的 `position` 不再一致时无法按具体消息归位；机器人取不到消息链接时只按会话匹配。
+- 飞书机器人只接收它所在群的消息；机器人入口之外的真人私聊和点名 @你依赖 user 身份补读。同一应用不能在多处同时消费事件。
 - 你隐藏了工具活动（`display.hideToolActivity`）时，派出子代理和子代理交回的通知在屏幕上都不显示，只能靠回复上方的标头分辨。标头只画在这一轮的第一块回复文字上；续会话后，以前的回复照原样画回去（记在 `<数据目录>/state/heads/`，只留最近 400 条）。
 - 久未交回的提醒按「这一次派出后跑了多久」算，不分它是卡住了还是在正常干活：正常干长活的负责 agent 也会触发，主会话看一眼就过。
 - 负责 agent 属于派出它的那个会话：换一个新会话叫不到它，续原来的会话才行。

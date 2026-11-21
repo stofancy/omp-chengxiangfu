@@ -8,7 +8,7 @@ const INBOX = join(HOME, "inbox");
 
 export interface Secret { file: string; json_key?: string }
 export interface SlackConfig { domain: string; me: string; user_token: Secret; app_token: Secret; channels: Record<string, { name: string; line?: string }> }
-export interface FeishuAccount { profile: string; realtime: boolean; groups: Record<string, { name: string; line?: string }> }
+export interface FeishuAccount { profile: string; bot: boolean; poll: boolean }
 export interface FeishuConfig { accounts: FeishuAccount[] }
 export interface Config { slack?: SlackConfig; feishu?: FeishuConfig; triage?: { about?: string; model?: string; command?: string } }
 
@@ -22,17 +22,38 @@ export function readSecret(s: Secret): string {
 
 export interface InboxEvent { source: string; who: string; where: string; link: string; line?: string; note?: string; urgent?: boolean }
 
-// 文件名由 key 决定：同一条消息不论实时推送还是轮询补读，都只进一次。返回 false 表示已有
-export function writeEvent(ev: InboxEvent, key: string, orderNs: bigint): boolean {
+interface OperatorEvent {
+	source: "feishu";
+	profile: string;
+	chat_id: string;
+	chat_type: "p2p" | "group";
+	chat_name: string;
+	message_id: string;
+	text: string;
+	link: string;
+	at: string;
+}
+
+function writeInboxEvent(inbox: string, ev: InboxEvent | OperatorEvent, key: string, orderNs: bigint): boolean {
 	const suffix = `${ev.source}-${key}`;
 	const seen = (dir: string) => existsSync(dir) && readdirSync(dir).some(f => f.endsWith(`-${suffix}.json`));
-	if (seen(join(INBOX, "new")) || seen(join(INBOX, "claimed"))) return false;
+	if (seen(join(inbox, "new")) || seen(join(inbox, "claimed"))) return false;
 	const name = `${String(orderNs).padStart(19, "0")}-${suffix}.json`;
-	mkdirSync(join(INBOX, "new"), { recursive: true });
-	const tmp = join(INBOX, `.${name}.tmp`);
-	writeFileSync(tmp, JSON.stringify(Object.fromEntries(Object.entries(ev).filter(([, v]) => v !== undefined && v !== ""))));
-	renameSync(tmp, join(INBOX, "new", name)); // 先写临时文件再改名，插件不会读到半个文件
+	mkdirSync(join(inbox, "new"), { recursive: true });
+	const tmp = join(inbox, `.${name}.tmp`);
+	const body = "message_id" in ev ? ev : Object.fromEntries(Object.entries(ev).filter(([, v]) => v !== undefined && v !== ""));
+	writeFileSync(tmp, JSON.stringify(body));
+	renameSync(tmp, join(inbox, "new", name)); // 先写临时文件再改名，插件不会读到半个文件
 	return true;
+}
+
+// 文件名由 key 决定：同一条消息不论实时推送还是轮询补读，都只进一次。返回 false 表示已有
+export function writeEvent(ev: InboxEvent, key: string, orderNs: bigint): boolean {
+	return writeInboxEvent(INBOX, ev, key, orderNs);
+}
+
+export function writeOperatorEvent(ev: OperatorEvent, orderNs: bigint): boolean {
+	return writeInboxEvent(join(INBOX, "operator"), ev, ev.message_id, orderNs);
 }
 
 // 记一笔这个程序的工作状态（和 inbox.py 的 health 同一种文件）：成功时记时间并清掉上次的错，失败时保留上次成功的时间

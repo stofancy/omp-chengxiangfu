@@ -26,19 +26,20 @@ def lark(profile, *args):
     return json.loads(res.stdout)
 
 
-def self_id(profile):
+def profile_identity(profile):
     try:
         status = lark(profile, "auth", "status", "--json")
-        me = (status.get("data", status).get("identities", {}).get("user") or {}).get("openId")
+        status = status.get("data", status)
+        me = (status.get("identities", {}).get("user") or {}).get("openId")
         if me:
-            return me
+            return me, status["appId"]
     except (RuntimeError, ValueError):
         pass
     config = json.loads((Path.home() / ".lark-cli/config.json").read_text())
     for app in config["apps"]:
         if (app.get("name") or app["appId"]) == profile and app.get("users"):
             if me := app["users"][0].get("userOpenId"):
-                return me
+                return me, app["appId"]
     raise RuntimeError("没有找到用户 open_id")
 
 
@@ -78,7 +79,11 @@ def sender_name(sender):
 
 def poll_account(account, plan, now, failed):
     profile = account["profile"]
-    me = self_id(profile)
+    me, app_id = profile_identity(profile)
+    ignored_senders = {me}
+    if account.get("bot") is True:
+        bot = lark(profile, "api", "GET", "/open-apis/bot/v3/info", "--as", "bot", "--format", "json")["data"]
+        ignored_senders.update((app_id, bot["open_id"]))
     name = f"feishu-cursor-{quote(profile, safe='')}.json"
     state = load_state(name, {})
     watched = {}
@@ -88,8 +93,7 @@ def poll_account(account, plan, now, failed):
         else:
             watched.setdefault(w["chat"], None)
     chats = {c["chat_id"]: c for c in pages(profile, "chats", "+chat-list", "--types", "p2p,group", "--page-size", "100")}
-    groups = account["groups"]
-    targets = {ch for ch, chat in chats.items() if chat["chat_mode"] == "p2p" or ch in watched} | groups.keys()
+    targets = {ch for ch, chat in chats.items() if chat["chat_mode"] == "p2p" or ch in watched}
     old_chats = state.get("chats", {})
     cursors = {}
     pending = {}
@@ -97,7 +101,7 @@ def poll_account(account, plan, now, failed):
 
     def collect(ch, m, top=None, mention=False):
         sender = m.get("sender") or {}
-        if not sender.get("id") or sender["id"] == me or m.get("msg_type") == "system" or m.get("deleted"):
+        if not sender.get("id") or sender["id"] in ignored_senders or m.get("msg_type") == "system" or m.get("deleted"):
             return
         key = m["message_id"]
         if seen("feishu", key):
@@ -110,14 +114,13 @@ def poll_account(account, plan, now, failed):
             if urgent:
                 pending[key].update(urgent=True, line=None)
             return
-        group = groups.get(ch, {})
         who = sender_name(sender)
         root = m.get("root_id") or (top and top["message_id"])
         is_reply = root and root != key
-        place = f"私聊 {who}" if direct else (group.get("name") or chat.get("name") or m.get("chat_name") or ch)
+        place = f"私聊 {who}" if direct else (chat.get("name") or m.get("chat_name") or ch)
         pending[key] = {"key": key, "chat": ch, "root": root if is_reply else None, "message": m, "time": created(m),
                         "who": who, "where": place + (" (thread reply)" if is_reply else ""), "urgent": urgent,
-                        "line": None if urgent else (watched.get(ch) or group.get("line")),
+                        "line": None if urgent else watched.get(ch),
                         "link": m.get("message_app_link") or f"https://applink.feishu.cn/client/chat/open?openChatId={ch}"}
         if top:
             roots[top["message_id"]] = top
@@ -133,7 +136,7 @@ def poll_account(account, plan, now, failed):
             messages = list(pages(profile, "messages", "+chat-messages-list", "--chat-id", ch,
                                   "--start", iso(start), "--order", "asc", "--page-size", "50", "--no-reactions"))
         except Exception as exc:
-            failed.append(f"{profile}/{groups.get(ch, {}).get('name') or chats.get(ch, {}).get('name') or ch}：{exc}")
+            failed.append(f"{profile}/{chats[ch].get('name') or ch}：{exc}")
             continue
         newest = start
         ignored = set(old.get("ignored", []))
@@ -209,7 +212,7 @@ def poll_account(account, plan, now, failed):
 
 
 def main():
-    accounts = CONFIG.get("feishu", {}).get("accounts", [])
+    accounts = [a for a in CONFIG.get("feishu", {}).get("accounts", []) if a.get("poll") is True]
     if not accounts:
         return 0
     plan = watch_plan()
