@@ -4,12 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hasFeishu, readConfig, runSetup, type SetupUI } from "./setup";
 
+// 终端里直接回车，select 返回 undefined。
+const ENTER = "<回车>";
+
 function questions(choices: string[], inputs: string[] = []) {
 	const notices: string[] = [];
 	const prefill: Array<string | undefined> = [];
 	const ui: SetupUI = {
 		async select(_title, options) {
 			const prefix = choices.shift();
+			if (prefix === ENTER) return undefined;
 			const selected = options.find(option => option.startsWith(prefix ?? ""));
 			expect(prefix).toBeDefined();
 			expect(selected).toBeDefined();
@@ -105,6 +109,21 @@ test("飞书账号独立开关机器人和补读，按目录绑定、解绑并�
 	expect(notices).toContainEqual(expect.stringContaining("飞书补读、飞书机器人长连接"));
 	await expect(runSetup(questions(["项目绑定", "解绑", "完成"], [""]).ui, { path, deps, cwd })).resolves.toBe(true);
 	expect(readConfig(path).projects).toEqual({ [join(dir, "团队")]: { feishu: "示例团队" } });
+}));
+
+test("子列表回车返回上一层并保留已做的修改，主菜单回车不保存", () => tempConfig(async path => {
+	const deps = {
+		slack: unexpected,
+		async lark(args: string[]) {
+			if (args[0] === "profile") return [{ name: "personal" }];
+			return { identities: { user: { status: "ready" }, bot: { status: "ready" } } };
+		},
+	};
+	const quit = questions(["飞书", "[ ] personal", "开启", "开启", ENTER, ENTER]);
+	await expect(runSetup(quit.ui, { path, deps })).resolves.toBe(false);
+	expect(readConfig(path)).toEqual({});
+	await expect(runSetup(questions(["飞书", "[ ] personal", "开启", "开启", ENTER, "完成"]).ui, { path, deps })).resolves.toBe(true);
+	expect(readConfig(path)).toEqual({ feishu: { accounts: [{ profile: "personal", bot: true, poll: true }] } });
 }));
 
 test("Slack 只存文件路径，从 API 识别用户和读取频道", () => tempConfig(async (path, dir) => {

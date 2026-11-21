@@ -75,8 +75,7 @@ async function pickGroups(ui: SetupUI, title: string, available: Record<string, 
 	for (;;) {
 		const options = entries.map(([id, { name }]) => `${groups[id] ? "[x]" : "[ ]"} ${name} (${id})${groups[id]?.line ? ` → ${groups[id].line}` : ""}`);
 		const choice = await ui.select(`${title}（选择切换勾选；重新勾选可改任务归属）`, [DONE, ...options]);
-		if (choice === undefined) return;
-		if (choice === DONE) return groups;
+		if (choice === undefined || choice === DONE) return groups;
 		const [id, { name }] = entries[options.indexOf(choice)];
 		if (groups[id]) delete groups[id];
 		else {
@@ -93,8 +92,7 @@ async function configureFeishu(ui: SetupUI, cfg: DeskConfig, lark: SetupIO["lark
 	for (;;) {
 		const options = names.map(name => `${accounts.has(name) ? "[x]" : "[ ]"} ${name}`);
 		const choice = await ui.select("飞书账号", [DONE, ...options]);
-		if (choice === undefined) return;
-		if (choice === DONE) break;
+		if (choice === undefined || choice === DONE) break;
 		const profile = names[options.indexOf(choice)];
 		const current = accounts.get(profile);
 		if (current) {
