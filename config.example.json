@@ -11,6 +11,16 @@
       "C0987654321": { "name": "#team" }
     }
   },
+  "feishu": {
+    "accounts": [
+      {
+        "profile": "示例公司",
+        "bot": true,
+        "poll": true
+      }
+    ]
+  },
+  "projects": { "/absolute/path/to/repo": { "feishu": "示例公司" } },
   "triage": { "about": "Your Name (as shown in chat), and what your team works on", "model": "pi/smol" },
   "ado": { "org": "your-ado-org" },
   "reminders": { "file": "~/.config/reminders.json", "line": "日常" }

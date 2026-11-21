@@ -11,15 +11,18 @@
 // - 看得见：每条回复上方画一行标头（回答、交出、交回、审查结果…），输入框上方固定显示等用户定的事、在跑的负责 agent、接收程序的故障、插件已更新待重启；状态栏数着接收程序拦下的无关消息。
 // - 不傻等：子代理写好了却被 omp 压着的交回由程序送达；子代理久未交回时叫醒主会话去看。
 // 远端写入自动记到任务表；给人看的视图里配上它之前用户最近的决定。除了审查那一条，不拦截任何操作。
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { holdHandback, releaseHandback } from "./agents";
+import { claimOperator, type Lark, type OperatorMessage, operatorPrompt, projectProfile, pushFeishuAsk, replyFeishu, rememberOwnerChat, runLark } from "./feishu";
 import { handbackKind } from "./heads";
-import { DISPATCH_RULES, HELD, HOME, INBOX_CLAIMED, INBOX_NEW, ORDERS, OWNER_RULES, REVIEW_RULES, TRIAGE_LOG, USER_RULES } from "./paths";
+import { DISPATCH_RULES, HELD, HOME, INBOX_CLAIMED, INBOX_NEW, OPERATOR_NEW, ORDERS, OWNER_RULES, REVIEW_RULES, TRIAGE_LOG, USER_RULES } from "./paths";
 import { remoteWrite } from "./remote";
 import { checkReply, feedback, renderRules, settings } from "./rules";
 import { createScreen, messageRow, readReviewing } from "./screen";
+import { hasFeishu, readConfig, runSetup } from "./setup";
 import { OFF_MESSAGE, isOn, setOn } from "./switch";
 import { type Ev, GENERAL, type Table, agentTaken, append, doneBlocker, isReviewerName, logError, needsReview, openTasks, readTable, taskOfAgent, taskOfReviewer, today } from "./table";
 import { decidedFor, renderViews, since, snapshot, taskCard } from "./views";
@@ -36,6 +39,8 @@ const ANSWER = /(?<!\d)(\d{1,3})\s*[.、:：)）]?\s*([^\s\d;；,，。.、:：]
 interface Job { id: string; label?: string; type?: string; agentId?: string; startTime?: number }
 interface Ctx {
 	agent?: { kind?: string; id?: string };
+	cwd: string;
+	isIdle(): boolean;
 	sessionManager?: { getSessionFile?(): string | undefined };
 	models?: { current?(): { provider?: string; id?: string } | undefined };
 	getSystemPrompt?(): string | string[] | undefined;
@@ -89,7 +94,7 @@ function route(l: Table, ev: InboxFile): { task?: string; tag: string } {
 	return { task: name, tag: `task=${name} | owner=${agent ? `agent://${agent}` : "none"}` };
 }
 
-export default function (pi: ExtensionAPI): void {
+export default function (pi: ExtensionAPI, lark: Lark = runLark): void {
 	const naming = pi as unknown as { getSessionName?(): string | undefined; setSessionName?(name: string): Promise<void> | void };
 	const z = pi.zod;
 	let session: string | undefined;
@@ -101,6 +106,8 @@ export default function (pi: ExtensionAPI): void {
 	let awayNote: string | undefined; // 用户离开一段时间后回来：这期间的变化
 	let awayDelivered = false; // 离开提示已随用户那条消息交付，那一轮答完就清掉
 	let userTurn = false; // 这一轮是用户发话引起的（不是外部事件叫醒的）：只有这种回复才算用户看过
+	const feishuQueued = new Map<string, OperatorMessage>();
+	let feishuTurn: { prompt: string; message: OperatorMessage } | undefined;
 
 	const jobs = (ctx: Ctx): Job[] => ctx.getAsyncJobSnapshot?.()?.running ?? [];
 
@@ -136,10 +143,22 @@ export default function (pi: ExtensionAPI): void {
 		}
 	};
 
+	const feishuError = (ctx: Ctx, action: string, err: unknown) => {
+		logError(action, err);
+		ctx.ui.notify(`${action}失败：${err instanceof Error ? err.message : String(err)}`, "error");
+	};
+
 	const record = (ev: Omit<Ev, "ts">) => {
 		append(ev);
 		renderViews();
 		if (ev.kind === "task" || ev.kind === "item") screen.writePlan(); // 盯办项、任务状态、事项变了：接收程序的监听范围和分拣用的任务清单跟着变
+		if (ev.kind === "ask" && ui) {
+			const ctx = ui;
+			void (async () => {
+				const profile = projectProfile(readConfig().projects, ctx.cwd);
+				if (profile) await pushFeishuAsk(lark, profile, Number(ev.n), String(ev.text));
+			})().catch(err => feishuError(ctx, "飞书推送待决定事项", err));
+		}
 	};
 
 	// 接收程序分拣时拦下的无关消息（明细在 state/triage.jsonl）：你上次发话以来的条数。文件或发话时间变了才重数
@@ -225,11 +244,34 @@ export default function (pi: ExtensionAPI): void {
 		);
 	};
 
-	const tick = () => {
-		if (!ui || !isOn(session)) return;
+	const tick = async () => {
+		const ctx = ui;
+		const sid = session;
+		if (!ctx || !sid || !isOn(sid)) return;
+		if (existsSync(OPERATOR_NEW)) {
+			try {
+				const { projects } = readConfig();
+				const profile = projectProfile(projects, ctx.cwd);
+				if (profile) {
+					let followUp = !ctx.isIdle();
+					for (const ev of claimOperator(projects, profile, sid)) {
+						rememberOwnerChat(ev);
+						await recordInput(ev.text, ctx);
+						const text = operatorPrompt(ev).trimEnd();
+						feishuQueued.set(text, ev);
+						if (followUp || !ctx.isIdle()) pi.sendUserMessage(text, { deliverAs: "followUp" });
+						else pi.sendUserMessage(text);
+						followUp = true;
+					}
+				}
+			} catch (err) {
+				feishuError(ctx, "飞书接收使用者消息", err);
+			}
+		}
+		if (ui !== ctx || session !== sid || !isOn(sid)) return;
 		claimInbox();
-		showStatus(ui);
-		screen.tick(ui.ui, jobs(ui));
+		showStatus(ctx);
+		screen.tick(ctx.ui, jobs(ctx));
 	};
 
 	// ---------- 会话与开关 ----------
@@ -278,6 +320,9 @@ export default function (pi: ExtensionAPI): void {
 		replyNote = undefined;
 		awayNote = undefined;
 		awayDelivered = false;
+		userTurn = false;
+		feishuQueued.clear();
+		feishuTurn = undefined;
 		attach(ctx);
 		await syncTools().catch(err => logError("tools", err));
 	});
@@ -295,20 +340,59 @@ export default function (pi: ExtensionAPI): void {
 			setOn(session, !off);
 			await syncTools().catch(err => logError("tools", err));
 			await syncRenderer();
-			if (off) screen.clear(ctx.ui);
-			else {
+			if (off) {
+				feishuQueued.clear();
+				feishuTurn = undefined;
+				screen.clear(ctx.ui);
+			} else {
 				await naming.setSessionName?.(TITLE);
 				screen.writePlan();
 			}
 			showStatus(ctx);
 			ctx.ui.notify(off ? "调度器模式已关闭：这个会话里插件不再做任何事" : "调度器模式已打开：你说的话和外部消息会按任务交给各自的负责 agent", "info");
+			if (!off) {
+				try {
+					const cfg = readConfig();
+					if (!(cfg.slack || hasFeishu(cfg) || cfg.ado?.org || cfg.reminders) || !cfg.triage?.about?.trim()) {
+						ctx.ui.notify("可运行 /调度配置，设置消息源和分拣描述。", "info");
+					}
+				} catch {
+					ctx.ui.notify("调度配置无法读取，请检查 config.json 后运行 /调度配置。", "warning");
+				}
+			}
 		},
 	});
 
-	pi.on("input", async (e: { text?: string }, ctx: Ctx) => {
-		if (!isMain(ctx) || !on(ctx)) return;
+	const setupCommand: Parameters<ExtensionAPI["registerCommand"]>[1] = {
+		description: "交互配置调度台的分拣、飞书和 Slack",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				console.error("当前没有交互界面，请在插件仓库运行 bun scripts/install.ts。");
+				return;
+			}
+			try {
+				let cwd = ctx.cwd;
+				try {
+					cwd = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+				} catch {} // 当前目录可以不属于 Git 仓库
+				const changed = await runSetup({
+					select: (title, options) => ctx.ui.select(title, options),
+					input: (title, placeholder) => ctx.ui.input(title, placeholder),
+					editor: (title, prefill) => ctx.ui.editor(title, prefill),
+					confirm: (title, message) => ctx.ui.confirm(title, message),
+					notify: (message, level) => ctx.ui.notify(message, level),
+				}, { cwd });
+				if (changed && isOn(session)) screen.writePlan();
+			} catch (err) {
+				ctx.ui.notify(`无法保存或读取调度配置：${String(err)}`, "error");
+			}
+		},
+	};
+	pi.registerCommand("调度配置", setupCommand);
+	pi.registerCommand("dispatch-setting", setupCommand);
+
+	const recordInput = async (text: string, ctx: Ctx) => {
 		if (!naming.getSessionName?.()) await naming.setSessionName?.(TITLE); // 会话还没名字：赶在 omp 按第一句话自动起名之前定下来
-		const text = String(e.text ?? "");
 		inboxSinceInput = 0; // 外部事件计数 = 用户上次发话以来到的
 		urgentSinceInput = 0;
 		// 离开多久从「上次发话」和「上次给用户的回复」里较晚的那个算；斜杠命令不算回来
@@ -320,7 +404,7 @@ export default function (pi: ExtensionAPI): void {
 			awayNote = `用户离开了约 ${Math.round(away)} 小时（从 ${new Date(base).toLocaleString("sv-SE").slice(5, 16)} 起）。先用一屏说清这期间变了什么，再回答。任务表里这期间的记录：\n${since(base)}`;
 			awayDelivered = false;
 		}
-		append({ sid: session ?? "", kind: "input" }); // 外部消息交给哪个会话、离开多久，都靠它
+		append({ sid: session ?? "", kind: "input", cwd: ctx.cwd }); // 会话分配、离开多久都靠这条记录
 		// 整条消息只由编号回答组成（「1 做 2 不做」「1 做；2 不做」）才自动记账；混了别的话就交给模型。
 		// 回答不能以数字开头，所以「12」「3:30」「1.5」不算
 		const l = readTable();
@@ -334,6 +418,9 @@ export default function (pi: ExtensionAPI): void {
 			record({ sid: session ?? "", kind: "decision", line: ask.line, date: today(), text: `${ask.text} → ${m[2]}`, n: ask.n });
 			record({ sid: session ?? "", kind: "ask_close", line: ask.line, n: ask.n, outcome: m[2], by: "operator" });
 		}
+	};
+	pi.on("input", async (e: { text?: string }, ctx: Ctx) => {
+		if (isMain(ctx) && on(ctx)) await recordInput(String(e.text ?? ""), ctx);
 	});
 
 	// 不常变的规则正文（调度规则、常设约束）。用户每次发话时放进系统提示词（见 before_agent_start），那里进缓存；
@@ -384,10 +471,26 @@ export default function (pi: ExtensionAPI): void {
 
 	// 用户发话时：把规则正文接到系统提示词后面（一直管到下一次发话，中间被子代理交回叫醒的回合也在）。
 	// 离开提示跟着用户那条消息走：消息真正开始处理时才算交付（正在跑的那一轮结束时不清掉它）
-	pi.on("before_agent_start", async (e: { reason?: string; systemPrompt?: string | string[] }, ctx: Ctx) => {
+	pi.on("before_agent_start", async (e: { reason?: string; prompt?: string; systemPrompt?: string | string[] }, ctx: Ctx) => {
 		if (!isMain(ctx) || e.reason !== "prompt" || !on(ctx)) return;
 		userTurn = true;
 		if (awayNote) awayDelivered = true;
+		// 入队不算交付：不能拿还在等的飞书消息接收上一轮（可能是终端）的回复。
+		if (feishuTurn?.prompt !== e.prompt) {
+			feishuTurn = undefined;
+			if (e.prompt && feishuQueued.size) {
+				const batch = `\n\n${e.prompt}\n\n`;
+				let position = -1;
+				for (const [text, message] of feishuQueued) {
+					const found = batch.lastIndexOf(`\n\n${text}\n\n`);
+					if (found < 0) continue;
+					feishuQueued.delete(text);
+					if (found <= position) continue;
+					position = found;
+					feishuTurn = { prompt: e.prompt, message };
+				}
+			}
+		}
 		const stable = stableRules();
 		if (Array.isArray(e.systemPrompt)) return { systemPrompt: [...e.systemPrompt, stable] };
 		if (typeof e.systemPrompt === "string") return { systemPrompt: `${e.systemPrompt}\n${stable}` };
@@ -399,6 +502,7 @@ export default function (pi: ExtensionAPI): void {
 		if (isMain(ctx)) {
 			if (on(ctx)) screen.turnEnd(ctx.ui);
 			userTurn = false;
+			feishuTurn = undefined;
 			return;
 		}
 		// 任务的负责 agent 或审查者这一侧：这一轮写完了交回，但自己还有后台命令或帮手在跑时，omp 不会把它送给主会话
@@ -443,6 +547,9 @@ export default function (pi: ExtensionAPI): void {
 		if (m.stopReason === "aborted" || m.stopReason === "error" || m.content.some(b => b.type === "toolCall")) return;
 		const text = m.content.filter(b => b.type === "text").map(b => b.text ?? "").join("\n").trim();
 		if (!text) return;
+		const target = feishuTurn?.message;
+		feishuTurn = undefined;
+		if (target) void replyFeishu(lark, target, text).catch(err => feishuError(ctx, "飞书回复", err));
 		screen.replied();
 		const l = readTable();
 		const ids = new Set<string>(); // 负责 agent 的名字不算：规则要求提到它时说清它在做哪个任务
@@ -494,14 +601,14 @@ export default function (pi: ExtensionAPI): void {
 		name: "tasktable_task",
 		label: "Task table task",
 		description:
-			"Create or update a task: its owner agent, goal, completion criteria and the external inputs it watches. Only the fields you pass are changed. A new task needs agent and done_when; after creating it, spawn the owner with the task tool using exactly that agent name, so agent://<name> is this task's owner. Watched Slack links (a message or thread, a channel, a DM) and PR links are read by the receivers, and new activity there is routed to this task; the result of this call says which of the entries you added no receiver can observe. Set status to 完成 to close it; that is refused until a reviewer has recorded a passing review with tasktable_review. 取消 closes it without a review.",
+			"Create or update a task: its owner agent, goal, completion criteria and the external inputs it watches. Only the fields you pass are changed. A new task needs agent and done_when; after creating it, spawn the owner with the task tool using exactly that agent name, so agent://<name> is this task's owner. Watched Slack, Feishu and PR links are read by the receivers, and new activity there is routed to this task; the result of this call says which of the entries you added no receiver can observe. Set status to 完成 to close it; that is refused until a reviewer has recorded a passing review with tasktable_review. 取消 closes it without a review.",
 		parameters: z.object({
 			task: z.string().describe("Task name, e.g. a ticket key like PROJ-123 or a short name."),
 			agent: z.string().optional().describe("Owner agent name, CamelCase ASCII (e.g. Proj123); unique among open tasks."),
 			title: z.string().optional().describe("Short title the operator understands."),
 			goal: z.string().optional().describe("What the task is for. No implementation plan."),
 			done_when: z.string().optional().describe("Checkable completion criteria: commands, artifacts, links."),
-			watch_add: z.array(z.string()).optional().describe("Things to start watching, as full links: a Slack message, thread, channel or DM link, a PR link. Ticket keys and other identifiers are accepted but nobody observes them; they only help route messages."),
+			watch_add: z.array(z.string()).optional().describe("Things to start watching, as full links: a Slack message, thread, channel or DM link, a Feishu chat or message link, or a PR link. Ticket keys and other identifiers are accepted but nobody observes them; they only help route messages."),
 			watch_remove: z.array(z.string()).optional().describe("Links or identifiers to stop watching."),
 			status: z.string().optional().describe("Leave empty while in progress; 完成 or 取消 closes the task."),
 		}),

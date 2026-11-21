@@ -22,7 +22,7 @@
 
 | | 已经有的 | 接下来 |
 |---|---|---|
-| 输入线 | Slack 实时推送和定时补读；PR 的评论、评审、投票；到期提醒；按订阅归位；噪音大的频道先分拣；每个来源报健康状态 | 先接 CI 和工单，再接日历和邮件；每个源都先过滤；「提前做」：负责 agent 先动手，有结果才说话；回复回到原处 |
+| 输入线 | Slack、飞书实时推送和定时补读；PR 的评论、评审、投票；到期提醒；按订阅归位；噪音大的频道先分拣；每个来源报健康状态 | 先接 CI 和工单，再接日历和邮件；每个源都先过滤；「提前做」：负责 agent 先动手，有结果才说话；回复回到原处 |
 | 调度线 | 一本任务表；每个任务一个负责 agent；完成前独立审查；被压住的交回由插件送达；久未交回叫醒主会话 | 被叫醒的回合少说话；输入直送负责 agent（要 omp 开放接口）；按进展判断卡没卡住；远端写入从记录变成闸门；任务收尾 |
 
 接下来几周先用起来、量清楚：代码只修 bug，提示词的改动都记下来；和插件之前同口径比切换次数、「有回复了」的次数，算出每个任务的花费；用满一段时间后，每个任务花的注意力不比以前少，就砍到只剩任务表和外部输入两样。详见文章第 12 节。
@@ -50,12 +50,12 @@
 | 登记要你定的事时 | 要求模型写明查过哪里，并把这个任务已有的决定、别的没答的提问列给它看：已有答案就撤回，不问你 |
 | 你发消息时 | 记一条发话记录（哪个会话、什么时候），用来决定外部消息交给哪个会话；整条消息只有编号答案时，记成决定；距你上次发话或上次看到回复超过 `away_hours`，把这期间任务表里的变化附上，让模型先讲清楚再答 |
 | 主会话回复后 | 检查给你的那条最终回复：超过行数上限（你发话引起的回合 `report_lines`，子代理交回或外部消息叫醒的回合 `wake_lines`）、出现事项编号（如 T6）、出现像提交 SHA 的十六进制串，就在下一次请求里提醒模型。只提醒，不拦 |
-| 远端写入后 | 尽力识别 git push、gh/az/curl 写操作、Slack 写接口、MCP 写操作，记进任务表的「最近动作」。任务的视图文件里，每条写入后面配着它之前 30 分钟内你对这个任务的决定（最多两条；没有就注明没有），供你抽查；这个配对不给模型看。只记录，不拦 |
+| 远端写入后 | 尽力识别 git push、gh/az/curl 写操作、Slack 写接口、飞书 `lark-cli` 写操作、MCP 写操作，记进任务表的「最近动作」。任务的视图文件里，每条写入后面配着它之前 30 分钟内你对这个任务的决定（最多两条；没有就注明没有），供你抽查；这个配对不给模型看。只记录，不拦 |
 | 画每条回复时 | 在这一轮第一块回复文字上方画一行标头：这一轮是你发话引起的（回答，或把活交给了哪个任务），还是谁叫醒的（哪个任务的负责 agent 交回、审查者的结论、外部消息、提醒）。只改显示，不进会话历史。用的是 omp 的「扩展回复渲染」接口，这个设置默认关：调度器模式开着时插件在本进程里把它打开，不改你的配置文件；你自己配过就听你的 |
 | 每 5 秒 | 认领外部消息，按任务登记的「要盯的外部输入」归到任务，合成一条消息叫醒主会话；刷新状态栏和输入框上方的固定区（等你定的事、在跑的负责 agent 跑了多久和在做什么、接收程序的故障）；看有没有被压住的交回和久未交回的负责 agent。每分钟比对一次磁盘上的插件（`src/`、`prompts/`），和进程启动时读入的不一样了，固定区就显示 `🔄 插件已更新：重启会话（omp -c）后生效` |
 | 负责 agent 写完交回、但它自己还有后台命令或帮手在跑时 | omp 要等它完全空闲才把结果送给主会话，到时送的也只是它最后说的话。插件在它这一轮结束时记下这条交回，15 秒后 omp 还没送就自己送达，主会话不会干等 |
 | 负责 agent 或审查者超过 `stall_minutes` 没交回时 | 叫醒主会话去看一眼（它在做哪一步、这一步多久了），之后每次间隔翻倍。主会话可以让它报进度、停掉后台命令或换办法 |
-| 登记、修改盯办项时 | 把未完成任务登记的 Slack 链接和 PR 链接写给接收程序，它们照这份清单定监听范围；登记了但没有程序读得到的（工单号、别的系统的链接），在工具的返回里当场告诉模型 |
+| 登记、修改盯办项时 | 把未完成任务登记的 Slack、飞书和 PR 链接写给接收程序，它们照这份清单定监听范围；登记了但没有程序读得到的（工单号、别的系统的链接），在工具的返回里当场告诉模型 |
 
 五个工具（调度器模式关着时不出现在模型的工具列表里）：`tasktable_task`（登记、更新任务：负责 agent、目标、完成判据、盯的外部输入、状态）、`tasktable_update`（任务下面的事项）、`tasktable_ask`（登记、关闭要你定的事，记决定）、`tasktable_correction`（你纠正它时记一条，连同它提议的一句规则；规则提议由程序登记成一件要你定的事，留在固定区里，模型不在回复里反复提；你同意才写进 `rules.md`）、`tasktable_review`（审查者记审查结论：审的是哪个事项或整个任务、通过或不通过、核对了什么、发现了什么）。
 
@@ -65,6 +65,8 @@
 |---|---|
 | Slack thread 里任意一条消息的链接 | 这个 thread 的根消息和所有回复 |
 | Slack 频道的链接 | 这个频道的所有消息（有任务登记了具体 thread 时，那个 thread 归它） |
+| 飞书会话链接 | 这个会话的所有消息（有任务登记了具体消息时，那条消息归它） |
+| 飞书消息链接（带 `position`） | 这个会话中对应位置的一条消息；接收程序仍按会话读 |
 | PR 链接（GitHub、Azure DevOps） | 这个 PR 的事件，链接后面的路径、查询串不影响 |
 | 其他链接 | 去掉查询串和末尾斜杠后相同的 |
 | 不是链接的标识（如工单号 `PROJ-123`） | 消息的位置、备注、链接里按整词出现的 |
@@ -99,12 +101,17 @@
 
 ## 安装
 
+准备好 `omp`、`bun`、`python3`、`gh` 和 `crontab`（轮询用到 `flock`）。读飞书还需要 `lark-cli`；实时推送使用 systemd 用户服务。
+
 ```bash
 git clone https://github.com/stofancy/omp-dispatch-desk ~/src/omp-dispatch-desk
-omp plugin link ~/src/omp-dispatch-desk
+cd ~/src/omp-dispatch-desk
+bun scripts/install.ts
 ```
 
-`omp plugin link` 装的是指向仓库的链接。改了 `src/` 或 `prompts/`，重启会话（`omp -c`）才生效：插件自带的规则和代码一起加载，同一个会话进程里不会出现新规则配旧代码。磁盘上的插件更新了，固定区会提示重启。
+安装程序在每次改动前显示内容并请你确认：链接插件、建立数据目录、配置分拣和消息源、安装轮询任务及实时服务。可重复运行；定时任务只替换安装程序标记的区块。已有手工添加的同名轮询任务需要自行移除，避免重复调度。先看预览可用 `bun scripts/install.ts --dry-run`，它按现有配置生成计划，不写任何文件。
+
+在 omp 内用 `/调度配置`（别名 `/dispatch-setting`）也能改分拣、飞书和 Slack。保存后如需部署消息源或使常驻服务载入新配置，再运行安装程序；它使用与 omp 相同的 `DISPATCH_DESK_HOME`。改了 `src/` 或 `prompts/`，重启会话（`omp -c`）后生效，固定区会提示重启。
 
 ## 数据目录
 
@@ -116,10 +123,18 @@ omp plugin link ~/src/omp-dispatch-desk
 | `tasks/views/` | 程序生成的 Markdown 视图（`总览.md`，每个任务一个文件） |
 | `state/dispatch/` | 打开了调度器模式的会话，每个一个文件 |
 | `state/triage.jsonl` | 接收程序分拣过的消息（谁、在哪、链接、分到哪类、一句摘要）；拦下的无关消息只在这里查得到。超过约 2 MB 换新文件，旧的留一份 `.1` |
+| `state/watch.json` | 未完成任务的监听范围和分拣用的任务摘要，由插件写给各消息源 |
+| `state/feishu-cursor-<profile>.json` | 飞书补读的会话与 @我 游标，每个 profile 一份 |
+| `state/health/feishu-poll.json`、`state/health/feishu-socket.json` | 飞书补读和实时推送的健康状态 |
+| `state/feishu-owner-chat.json` | 按 profile 记录使用者与机器人的单聊，用于推送待决定事项 |
 | `inbox/new/`、`inbox/claimed/` | 外部消息：会话外的程序写进 `new/`，认领后移到 `claimed/` |
+| `inbox/operator/new/`、`inbox/operator/claimed/` | 使用者发给飞书机器人的指令，由绑定了对应账号的调度会话认领 |
 | `lines/<任务>/rules.md` | 每个任务的低风险写入白名单、禁区 |
 | `rules.md` | 你自己的补充规则，接在插件规则后面注入 |
 | `config.json` | `rules` 段是规则参数；其余是外部消息源的配置，见 `config.example.json` |
+| `config.json.bak.<时间戳>` | 配置向导覆盖旧配置之前的备份 |
+| `crontab.bak.<时间戳>`、`dispatch-desk-*.service.bak.<时间戳>` | 安装程序改动前备份的 crontab 和被替换或移除的用户服务文件 |
+| `logs/<源>_poll.log` | 安装程序装的定时轮询的输出（写入条数、错误）；常驻服务的输出在 `journalctl --user -u dispatch-desk-*` |
 
 从旧版升级：运行 `bun scripts/migrate-single-tasktable.ts [数据目录]`，把旧的分账本合并成这一本任务表，旧数据移到 `archive/<时间戳>/`。可重复运行，已迁移过就什么都不做。消息源的定时任务改成每 5 分钟（见 `deploy/crontab.example`）：程序按 5 分钟一个周期判断它们是否正常，还按旧间隔跑的会被误报成没在工作。
 
@@ -128,7 +143,7 @@ omp plugin link ~/src/omp-dispatch-desk
 1. 停掉旧的 Slack 推送服务：`systemctl --user disable --now chengxiangfu-slack.service`，删掉它的 unit 文件。
 2. 挪数据目录：`mv ~/.local/share/chengxiangfu ~/.local/share/dispatch-desk`。设过 `CHENGXIANGFU_HOME` 的，改成 `DISPATCH_DESK_HOME`。
 3. 换插件链接：`omp plugin uninstall omp-chengxiangfu`（只删链接，不动仓库），把仓库的 remote 改成 `https://github.com/stofancy/omp-dispatch-desk` 并拉最新代码，再 `omp plugin link <仓库路径>`。
-4. 照 `deploy/dispatch-desk-slack.service` 和 `deploy/crontab.example` 重装推送服务和定时任务。
+4. 用 `bun scripts/install.ts` 重装推送服务和定时任务。
 5. 重启 omp 会话（`omp -c`）。哪些会话开着调度器模式记在数据目录里，挪过去后照旧。
 
 ## 外部消息
@@ -151,16 +166,29 @@ omp plugin link ~/src/omp-dispatch-desk
 |---|---|---|
 | `slack_socket.ts` | Slack 实时推送（Socket Mode）：配置里关注的频道、未完成任务登记要盯的频道和 thread、发给你的私信、@ 你的消息。配了分拣时，没归到任务的频道里不紧急的消息留给定时补读去分拣。每 30 秒发一次心跳，90 秒没回音就重连（切 VPN、机器休眠后连接会悄悄死掉） | 常驻，见 `deploy/dispatch-desk-slack.service` |
 | `slack_poll.py` | 给实时推送兜底，补读配置里关注的频道，和未完成任务登记要盯的频道、私信、thread；配了分拣时，没归到任务的频道里不紧急的消息先分拣（见下） | 每 5 分钟，见 `deploy/crontab.example` |
+| `feishu_socket.ts` | 飞书机器人长连接：收使用者指令和任务登记的群消息 | 常驻，见 `deploy/dispatch-desk-feishu.service` |
+| `feishu_poll.py` | 用 user 身份补读私聊、点名 @你和任务登记且可访问的会话 | 每 5 分钟，见 `deploy/crontab.example` |
 | `pr_poll.py` | 你开着的 PR、未完成任务登记要盯的 PR（别人开的也算）有新评论、review、投票（GitHub 走 `gh`，Azure DevOps 走 `az`） | 每 5 分钟 |
 | `reminders_poll.py` | 提醒文件里到期的条目，每天一次。`due` 写日期（当天第一次检查就提醒）或带时刻（`2026-11-18 16:30`，本机时间，到点后的第一次检查提醒，最多晚一个周期）。写错的条目（缺字段等）只跳过那一条，并报成故障 | 每 5 分钟 |
 
-每个消息源每次跑完都在 `<数据目录>/state/health/` 记一笔（最后一次成功的时间、最近的错）。超过三个周期没成功、或有一部分一直读不到的，显示在输入框上方的固定区，也写进给主会话的任务表摘要，由它在对话里告诉你一次。周期按上表的间隔算（都是 5 分钟），定时任务要照这个间隔跑，否则会误报；机器休眠刚醒来的一个周期内，新出现的不算故障。不再用某个消息源时，把它在 `state/health/` 下的那个文件删掉，否则会一直报它没在工作。
+每个消息源在 `<数据目录>/state/health/` 记录最后一次成功时间和最近的错。超过三个周期没成功、或有一部分一直读不到的，显示在输入框上方的固定区，也写进给主会话的任务表摘要，由它在对话里告诉你一次。轮询以 5 分钟为一个周期；机器休眠刚醒来的一个周期内，新出现的不算故障。不再用某个消息源时，把它在 `state/health/` 下的那个文件删掉，否则会一直报它没在工作。
 
-Slack 需要一个开了 Socket Mode 的 Slack App：app-level token（`connections:write`），以及订阅 `message.channels`、`message.groups`、`message.im`、`message.mpim` 用户事件。
+Slack 需要一个开了 Socket Mode 的 Slack App：app-level token（`connections:write`），以及订阅 `message.channels`、`message.groups`、`message.im`、`message.mpim` 用户事件。向导只保存 user token 和 app token 的文件路径；user token 要有权读取所选频道（列出公开／私有频道分别需要 `channels:read`、`groups:read`）。
+
+### 飞书
+
+1. 每个租户用 `lark-cli` 配一个 profile，运行 `lark-cli profile list` 查看账号。使用者须登录该 profile，机器人用同一应用识别使用者本人。
+2. 在飞书开发者后台启用机器人和长连接，订阅 [`im.message.receive_v1`](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive)。开通 `im:message.p2p_msg:readonly`（收机器人私聊）、`im:message.group_msg`（收群消息）、`im:message:readonly`（补取消息链接）和 `im:message:send_as_bot`（回复和推送）。需要在群里对话或监听时，把机器人加入该群。同一应用只能有一条事件总线。
+3. 在仓库目录打开 omp，运行 `/调度配置`，在「飞书」里选 profile 并开启「机器人入口」，再在「项目绑定」里把仓库目录绑定到该账号。目录绑定默认取当前仓库根目录，可以修改或解绑；子目录按匹配的最长路径选账号。保存后运行安装程序部署机器人长连接，然后在目标会话打开 `/调度`。
+4. 私聊机器人，或在群里 @机器人，就能向该会话发话。这一轮的最终回复会回到原消息；在终端发话不会回飞书。你至少私聊机器人一次后，之后登记的「待你决定」会推送到该单聊。
+
+要监控某个飞书群，把会话链接登记到任务的「要盯的外部输入」；也可以在群里 @机器人，请调度器登记当前群。登记整个会话时，普通群消息归该任务；登记带 `position` 的消息链接时，只匹配对应消息。机器人取不到消息链接时只能按会话匹配。
+
+每个 profile 可单独开启「用户身份补读」。补读读取真人私聊、点名 @你的消息和任务登记且账号可访问的会话，间隔 5 分钟；群里的 @所有人 不算点名。应用需开通 `im:chat:read`、`im:message:readonly` 和 `search:message`，再运行 `lark-cli --profile '<profile>' auth login --domain im,contact --scope search:message` 完成用户授权。
 
 ### 分拣：没归到任务的频道，先让便宜的模型看一眼
 
-有的频道只是想知道动静（比如团队大频道），大部分消息和你无关。把这类频道写进 `config.json` 的 `slack.channels` 但不写 `line`，再加一段 `triage`（见 `config.example.json`）：
+Slack 里只想了解动静的频道可以不填任务名（`line`），并在 `/调度配置` 里填分拣描述（见 `config.example.json`）：
 
 - `about`：你是谁（名字照聊天里显示的写）、团队做什么，模型据此判断和你相不相关。`model`：默认 `pi/smol`，即 omp 配置里的 smol 角色。`command`：omp 的路径，默认 `omp`，定时任务的 `PATH` 里要找得到。
 - 只分拣不紧急、没归到任务的消息。私信、@你、任务登记要盯的地方、写了 `line` 的频道，都不经过模型，直接送。
@@ -172,7 +200,8 @@ Slack 需要一个开了 Socket Mode 的 Slack App：app-level token（`connecti
 ## 已知限制
 
 - 插件不能直接给子代理发消息，所以外部消息先到主会话，再由它交给负责 agent。
-- 没有程序读得到的盯办项（Jira 等工单、别的系统的链接）不会自动提醒，只能靠催办日期。机器休眠期间别人发来的私信，只有登记在某个任务的盯办项里的才会补读。
+- 没有程序读得到的盯办项（Jira 等工单、别的系统的链接）不会自动提醒，只能靠催办日期。机器休眠期间的 Slack 私信，只有登记在某个任务的盯办项里的才会补读。
+- 飞书机器人只接收它所在群的消息；机器人入口之外的真人私聊和点名 @你依赖 user 身份补读。同一应用不能在多处同时消费事件。
 - 你隐藏了工具活动（`display.hideToolActivity`）时，派出子代理和子代理交回的通知在屏幕上都不显示，只能靠回复上方的标头分辨。标头只画在这一轮的第一块回复文字上；续会话后，以前的回复照原样画回去（记在 `<数据目录>/state/heads/`，只留最近 400 条）。
 - 久未交回的提醒按「这一次派出后跑了多久」算，不分它是卡住了还是在正常干活：正常干长活的负责 agent 也会触发，主会话看一眼就过。
 - 负责 agent 属于派出它的那个会话：换一个新会话叫不到它，续原来的会话才行。

@@ -9,8 +9,9 @@ import { join } from "node:path";
 import { type Step, dueHandbacks, lastStep } from "./agents";
 import { type Trigger, headLabel, headLine, rowFor, tailTriggers } from "./heads";
 import { type Fault, faults, readHealth } from "./health";
-import { CONFIG, HEADS, HELD, PLUGIN_ROOT, REVIEWING, WATCH_PLAN } from "./paths";
+import { HEADS, HELD, PLUGIN_ROOT, REVIEWING, WATCH_PLAN } from "./paths";
 import { settings } from "./rules";
+import { hasFeishu, readConfig } from "./setup";
 import { type Table, logError, openItems, openTasks, ownerOfReviewer, readTable, taskOfReviewer, writeAtomic } from "./table";
 import type { Monitoring } from "./views";
 import { type Sources, observed, watchPlan } from "./watch";
@@ -107,10 +108,10 @@ export function messageRow(message: { customType?: string; content?: unknown }, 
 // 本机配了哪些接收程序
 export function sources(): Sources {
 	try {
-		const cfg = JSON.parse(readFileSync(CONFIG, "utf8")) as { slack?: unknown; ado?: { org?: string } };
-		return { slack: !!cfg.slack, ado: cfg.ado?.org };
+		const cfg = readConfig();
+		return { slack: !!cfg.slack, feishu: hasFeishu(cfg), ado: cfg.ado?.org };
 	} catch {
-		return { slack: false };
+		return { slack: false, feishu: false };
 	}
 }
 
@@ -167,7 +168,6 @@ export function createScreen(deps: ScreenDeps) {
 	const told = new Set<string>(); // 已经随一条回复告诉过用户的故障
 	let current: Fault[] = []; // 现在显示给用户、写给模型的故障
 	let offered = new Set<string>(); // 最近一次写给模型时标成「新出现」的：它回了话才算告诉过
-	const src = sources();
 
 	// ---------- 久未交回 ----------
 	const nextStall = new Map<string, number>(); // 任务的这一次运行 → 下一次到多少分钟提醒
@@ -254,13 +254,15 @@ export function createScreen(deps: ScreenDeps) {
 		// 给任务表摘要用：哪些接收程序坏了、每个任务有几项没人盯
 		monitoring(): Monitoring {
 			offered = new Set(current.filter(f => !told.has(f.key)).map(f => f.key));
+			const src = sources();
 			return { faults: current.map(f => ({ text: f.text, fresh: offered.has(f.key) })), unobserved: watch => watch.filter(w => !observed(w, src)).length };
 		},
 		// 登记盯办项时告诉模型：哪些有程序在读，哪些没有
 		coverage(entries: string[]): string {
+			const src = sources();
 			const blind = entries.filter(w => !observed(w, src));
 			if (!blind.length) return "";
-			return ` NOT observed by any source: ${blind.map(w => `"${w}"`).join(", ")}. Nobody will be told when these change; they only help route messages that arrive through other watched places. Sources read Slack message, thread, channel and DM links${src.slack ? "" : " (Slack is not configured on this machine)"}, GitHub PR links${src.ado ? `, and Azure DevOps PR links in ${src.ado}` : ""}. For anything else, set a chase date on an item and have the owner check it.`;
+			return ` NOT observed by any source: ${blind.map(w => `"${w}"`).join(", ")}. Nobody will be told when these change; they only help route messages that arrive through other watched places. Sources read Slack message, thread, channel and DM links${src.slack ? "" : " (Slack is not configured on this machine)"}, Feishu chat and message links${src.feishu ? "" : " (Feishu is not configured on this machine)"}, GitHub PR links${src.ado ? `, and Azure DevOps PR links in ${src.ado}` : ""}. For anything else, set a chase date on an item and have the owner check it.`;
 		},
 		// 给任务表摘要用：在跑的子代理，带已跑多久和在做什么
 		running(jobs: Job[]): string[] {
@@ -281,7 +283,7 @@ export function createScreen(deps: ScreenDeps) {
 				const open = openTasks(l);
 				const items = openItems(l).sort((a, b) => b.updated.localeCompare(a.updated)); // 最近动过的在前
 				const tasks = open.map(t => ({ name: t.name, title: t.title, goal: t.goal, items: items.filter(i => i.line === t.name).slice(0, 6).map(i => i.title) }));
-				const plan = { ...watchPlan(open.map(t => ({ name: t.name, watch: t.watch })), src), tasks };
+				const plan = { ...watchPlan(open.map(t => ({ name: t.name, watch: t.watch })), sources()), tasks };
 				mkdirSync(join(WATCH_PLAN, ".."), { recursive: true });
 				writeAtomic(WATCH_PLAN, JSON.stringify(plan, null, 1));
 			} catch (err) {

@@ -5,6 +5,8 @@ const ROOT = "https://acme.slack.com/archives/C111/p1700000000000100";
 const REPLY = "https://acme.slack.com/archives/C111/p1700000555000200?thread_ts=1700000000.000100";
 const OTHER_THREAD = "https://acme.slack.com/archives/C111/p1700009999000300";
 const CHANNEL = "https://acme.slack.com/archives/C111";
+const FEISHU_CHAT = "https://applink.feishu.cn/client/chat/open?openChatId=oc_0123456789abcdef";
+const FEISHU_MESSAGE = `${FEISHU_CHAT}&position=341`;
 
 const one = (watch: string[], link: string, extra: { where?: string; note?: string } = {}) => matchTask({ link, ...extra }, [{ name: "A", watch }]).task;
 
@@ -19,6 +21,28 @@ test("Slack：别的 thread、别的频道不归；只登记到频道的，频�
 	expect(one([ROOT], "https://acme.slack.com/archives/C222/p1700000000000100")).toBeUndefined();
 	expect(one([CHANNEL], OTHER_THREAD)).toBe("A");
 	expect(one([CHANNEL], REPLY)).toBe("A");
+});
+
+test("飞书消息链接只匹配同一条消息，优先于同会话的登记", () => {
+	const tasks = [{ name: "会话", watch: [FEISHU_CHAT] }, { name: "消息", watch: [FEISHU_MESSAGE] }];
+	expect(matchTask({ link: FEISHU_MESSAGE }, tasks).task).toBe("消息");
+	expect(matchTask({ link: FEISHU_MESSAGE.replace("341", "342") }, tasks).task).toBe("会话");
+	expect(matchTask({ link: FEISHU_CHAT }, tasks).task).toBe("会话");
+	expect(matchTask({ link: FEISHU_MESSAGE.replace("oc_0123", "oc_4567") }, tasks).task).toBeUndefined();
+	expect(one([FEISHU_MESSAGE], "https://applink.feishu.cn/client/chat/open?position=341&openChatId=oc_0123456789abcdef#message")).toBe("A");
+});
+
+test("飞书计划按会话去重，优先保留整个会话的登记；消息级仅决定监听范围", () => {
+	const message = { name: "消息", watch: [FEISHU_MESSAGE] };
+	const chat = { name: "会话", watch: [FEISHU_CHAT] };
+	const tasks = [message, chat];
+	const enabled = { slack: false, feishu: true };
+	expect(observed(FEISHU_MESSAGE, enabled)).toBe(true);
+	expect(observed(FEISHU_CHAT, { slack: false, feishu: false })).toBe(false);
+	expect(watchPlan([message], enabled).feishu).toEqual([{ task: "消息", chat: "oc_0123456789abcdef", whole: false }]);
+	expect(watchPlan(tasks, enabled).feishu).toEqual([{ task: "会话", chat: "oc_0123456789abcdef", whole: true }]);
+	expect(watchPlan([chat, message], enabled).feishu).toEqual([{ task: "会话", chat: "oc_0123456789abcdef", whole: true }]);
+	expect(watchPlan(tasks, { slack: false, feishu: false }).feishu).toEqual([]);
 });
 
 test("PR：GitHub 和 Azure DevOps 的地址忽略后面的路径、查询串、锚点；别的 PR 号不归", () => {
@@ -50,14 +74,14 @@ test("命中几个任务：thread 级压过频道级；同一级仍然几个就�
 });
 
 test("哪些盯办项有接收程序在读：Slack 的链接（配了 Slack 才算）、GitHub 的 PR、配置的那个 Azure DevOps 组织的 PR；工单号、别的链接、随手写的说明都没有", () => {
-	const all = { slack: true, ado: "acme" };
+	const all = { slack: true, feishu: false, ado: "acme" };
 	expect(observed("https://acme.slack.com/archives/D0AAAAAAAAA", all)).toBe(true);
 	expect(observed("https://acme.slack.com/archives/C0BBBBBBBBB/p1700000123000400", all)).toBe(true);
-	expect(observed("https://acme.slack.com/archives/C0BBBBBBBBB/p1700000123000400", { slack: false })).toBe(false);
-	expect(observed("https://github.com/o/r/pull/37", { slack: false })).toBe(true);
+	expect(observed("https://acme.slack.com/archives/C0BBBBBBBBB/p1700000123000400", { slack: false, feishu: false })).toBe(false);
+	expect(observed("https://github.com/o/r/pull/37", { slack: false, feishu: false })).toBe(true);
 	expect(observed("https://dev.azure.com/acme/Proj/_git/repo/pullrequest/12", all)).toBe(true);
 	expect(observed("https://dev.azure.com/other/Proj/_git/repo/pullrequest/12", all)).toBe(false);
-	expect(observed("https://dev.azure.com/acme/Proj/_git/repo/pullrequest/12", { slack: true })).toBe(false);
+	expect(observed("https://dev.azure.com/acme/Proj/_git/repo/pullrequest/12", { slack: true, feishu: false })).toBe(false);
 	for (const blind of ["OPS-42", "https://acme.atlassian.net/browse/PROJ-42", "slack:D0AAAAAAAAA (和某人的私信)", "https://github.com/o/r/issues/5"]) expect(observed(blind, all)).toBe(false);
 });
 
@@ -67,7 +91,7 @@ test("交给接收程序的清单：频道和私信整个读，thread 带上那�
 			{ name: "A", watch: ["https://acme.slack.com/archives/D0AAAAAAAAA", "https://acme.slack.com/archives/C0BBBBBBBBB/p1700000123000400", "OPS-42", "https://github.com/O/R/pull/37#issuecomment-1"] },
 			{ name: "B", watch: ["https://acme.slack.com/archives/C0BBBBBBBBB/p1700000123999999?thread_ts=1700000123.000400", "https://github.com/o/r/pull/37", "https://dev.azure.com/acme/My%20Proj/_git/repo/pullrequest/12?_a=files"] },
 		],
-		{ slack: true, ado: "acme" },
+		{ slack: true, feishu: false, ado: "acme" },
 	);
 	expect(plan.slack).toEqual([
 		{ task: "A", channel: "D0AAAAAAAAA", thread: undefined },

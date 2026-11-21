@@ -21,6 +21,28 @@ test("写入照样认得出：带方法的、带字段的、带数据的；引�
 	expect(bash("cd repo && git push origin feature")).toStartWith("git push");
 });
 
+test("lark-cli：识别飞书 IM 写入和原始 API 写入", () => {
+	for (const verb of ["+messages-send", "+messages-reply", "+messages-forward", "+messages-edit", "+chat-create", "+flag-cancel", "messages forward", "chat.members delete", "feed.groups batch_add_item"]) {
+		expect(bash(`echo ready && lark-cli --profile "示例 公司" im ${verb} --as bot`)).toStartWith("lark-cli im write");
+	}
+	for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+		expect(bash(`env /usr/local/bin/lark-cli api --profile=example ${method} /open-apis/im/v1/messages`)).toStartWith("lark-cli api write");
+	}
+});
+
+test("lark-cli：读消息、读已读状态和 GET 不记账", () => {
+	for (const command of [
+		`lark-cli --profile "示例 公司" im +messages-mget --message-ids om_example`,
+		"lark-cli im +chat-list --as user --types group",
+		"lark-cli im +messages-read-status",
+		"lark-cli im messages read_users",
+		"lark-cli im feed.groups batch_query",
+		`lark-cli im +messages-search --query '+messages-send'`,
+		`lark-cli api GET /open-apis/im/v1/chats | grep POST`,
+		`echo "lark-cli im +messages-send"`,
+	]) expect(bash(command)).toBeUndefined();
+});
+
 test("拆简单命令：引号、$( )、( ) 里面的分隔符不算；引号没配上时后面整段算一条", () => {
 	expect(commands(`a 'x | y' | b "p; q $(c | d)" ; e && f`).map(s => s.trim()).filter(Boolean)).toEqual([`a 'x | y'`, `b "p; q $(c | d)"`, "e", "& f"]);
 	expect(commands(`echo "it's fine" | wc -l`).map(s => s.trim())).toEqual([`echo "it's fine"`, "wc -l"]);

@@ -1,5 +1,9 @@
 // 识别远端写入，只用来记账（不拦）。尽力而为：认不出来的就不记。
 const GIT_PUSH = /(^|[|;&(\n]|&&)\s*(\w+=\S*\s+)*(env\s+|command\s+|sudo\s+)?(\S*\/)?git(\s+(-C\s+\S+|-c\s+\S+|--?[\w-]+(=\S+)?))*\s+push\b/;
+// lark-cli 的 --profile 可放在服务名前后，名字可能带空格。
+const LARK = String.raw`^[\s&]*(?:\w+=\S+\s+)*(?:(?:env|command|sudo)\s+)?(?:\S*/)?lark-cli\s+`;
+const LARK_PROFILE = String.raw`(?:--profile(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)\s+)?`;
+const LARK_IM_WRITE = String.raw`(?:\+(?:chat-(?:create|update)|messages-(?:send|reply|forward|edit)|flag-(?:create|cancel)|feed-shortcut-(?:create|remove))|(?:chats|chat\.(?:join_requests|managers|members|moderation|nickname|user_setting)|feed\.groups|files|images|messages|pins|reactions|threads)\s+(?:create|delete|update|patch|link|forward|merge_forward|urgent_(?:app|phone|sms)|add_managers|delete_managers|handle|batch_(?:update|add_item|remove_item)))(?=\s|$)`;
 // 在整条命令里找的：自带边界，或者出现在哪里都算
 const ANYWHERE: Array<[RegExp, string]> = [
 	[GIT_PUSH, "git push"],
@@ -8,6 +12,8 @@ const ANYWHERE: Array<[RegExp, string]> = [
 ];
 // 靠参数判断的：只在同一条简单命令里找。一行里后面别的命令带 -f、-d（grep -F、cut -d）不算
 const SAME_COMMAND: Array<[RegExp, string]> = [
+	[new RegExp(`${LARK}${LARK_PROFILE}im\\s+${LARK_PROFILE}${LARK_IM_WRITE}`), "lark-cli im write"],
+	[new RegExp(`${LARK}${LARK_PROFILE}api\\s+${LARK_PROFILE}(POST|PUT|PATCH|DELETE)\\b`, "i"), "lark-cli api write"],
 	[/\bgh\s+api\b.*(\s-X\s*|--method[\s=])(POST|PATCH|PUT|DELETE)\b/i, "gh api write"],
 	[/\bgh\s+api\b(?!.*(\s-X\s*|--method[\s=])GET\b).*\s(-f|-F|--field|--raw-field|--input)\s/, "gh api write"],
 	[/\baz\s+(?!account\b)(?!.*\s(list|show)(\s|$)).*\s(create|update|delete|set|assign|add|remove|start|stop|restart|upload|import)(\s|$)/, "az write"],
