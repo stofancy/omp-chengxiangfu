@@ -94,7 +94,9 @@ async function install(rl?: Interface) {
 	const path = [...new Set(cronPaths)].join(":");
 	const pollers = ["pr", ...(config.reminders ? ["reminders"] : []), ...(config.slack ? ["slack"] : []), ...(feishu ? ["feishu"] : [])];
 	const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
-	const jobs = pollers.map(p => `*/5 * * * * cd ${shellQuote(join(ROOT, "sources"))} && PATH=${shellQuote(path)} DISPATCH_DESK_HOME=${shellQuote(DATA)} flock -n /tmp/dispatch-desk-${p}.lock python3 ${p}_poll.py`.replace(/%/g, "\\%"));
+	// cron 不保留输出：每个轮询追加到数据目录 logs/ 下自己的日志，出错时有处可查
+	const logs = join(DATA, "logs");
+	const jobs = pollers.map(p => `*/5 * * * * cd ${shellQuote(join(ROOT, "sources"))} && PATH=${shellQuote(path)} DISPATCH_DESK_HOME=${shellQuote(DATA)} flock -n /tmp/dispatch-desk-${p}.lock python3 ${p}_poll.py >> ${shellQuote(join(logs, `${p}_poll.log`))} 2>&1`.replace(/%/g, "\\%"));
 	const block = [CRON_START, ...jobs, CRON_END].join("\n");
 	const crontab = run("crontab", ["-l"]);
 	if (crontab.error) throw crontab.error;
@@ -106,6 +108,7 @@ async function install(rl?: Interface) {
 	if (oldCron === newCron) console.log(`crontab 块已是最新：\n${block}`);
 	else if (await ask("更新 crontab", `备份当前内容到 ${backup}，仅写入下列管理块：\n${block}`)) {
 		writeFileSync(backup, oldCron, { mode: 0o600, flag: "wx" });
+		mkdirSync(logs, { recursive: true });
 		checked("crontab", ["-"], newCron);
 	}
 

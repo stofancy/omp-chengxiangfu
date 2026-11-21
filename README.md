@@ -132,6 +132,7 @@ bun scripts/install.ts
 | `config.json` | `rules` 段是规则参数；其余是外部消息源的配置，见 `config.example.json` |
 | `config.json.bak.<时间戳>` | 配置向导覆盖旧配置之前的备份 |
 | `crontab.bak.<时间戳>`、`dispatch-desk-*.service.bak.<时间戳>` | 安装程序改动前备份的 crontab 和被替换或移除的用户服务文件 |
+| `logs/<源>_poll.log` | 安装程序装的定时轮询的输出（写入条数、错误）；常驻服务的输出在 `journalctl --user -u dispatch-desk-*` |
 
 从旧版升级：运行 `bun scripts/migrate-single-tasktable.ts [数据目录]`，把旧的分账本合并成这一本任务表，旧数据移到 `archive/<时间戳>/`。可重复运行，已迁移过就什么都不做。消息源的定时任务改成每 5 分钟（见 `deploy/crontab.example`）：程序按 5 分钟一个周期判断它们是否正常，还按旧间隔跑的会被误报成没在工作。
 
