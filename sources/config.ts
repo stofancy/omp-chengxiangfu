@@ -8,7 +8,9 @@ const INBOX = join(HOME, "inbox");
 
 export interface Secret { file: string; json_key?: string }
 export interface SlackConfig { domain: string; me: string; user_token: Secret; app_token: Secret; channels: Record<string, { name: string; line?: string }> }
-export interface Config { slack?: SlackConfig; triage?: { about?: string; model?: string; command?: string } }
+export interface FeishuAccount { profile: string; realtime: boolean; groups: Record<string, { name: string; line?: string }> }
+export interface FeishuConfig { accounts: FeishuAccount[] }
+export interface Config { slack?: SlackConfig; feishu?: FeishuConfig; triage?: { about?: string; model?: string; command?: string } }
 
 export const config: Config = JSON.parse(readFileSync(join(HOME, "config.json"), "utf8"));
 
@@ -50,25 +52,40 @@ export function writeHealth(key: string, label: string, everyS: number, error?: 
 	renameSync(tmp, path);
 }
 
-// 未完成任务登记要盯的 Slack 频道、私信和 thread（插件写在 state/watch.json）：值是任务名。文件变了才重读
+// 未完成任务登记的盯办项（插件写在 state/watch.json），文件变了才重读。
 export interface SlackWatch { channels: Map<string, string>; threads: Map<string, string> }
-let watchCache: { mtime: number; watch: SlackWatch } | undefined;
-export function slackWatch(): SlackWatch {
+interface ChatWatch { slack: SlackWatch; feishu: Map<string, string | undefined> }
+let watchCache: { mtime: number; watch: ChatWatch } | undefined;
+function chatWatch(): ChatWatch {
 	const path = join(HOME, "state", "watch.json");
 	let mtime = 0;
 	try {
 		mtime = statSync(path).mtimeMs;
 	} catch {}
 	if (watchCache?.mtime === mtime) return watchCache.watch;
-	const watch: SlackWatch = { channels: new Map(), threads: new Map() };
+	const watch: ChatWatch = { slack: { channels: new Map(), threads: new Map() }, feishu: new Map() };
 	try {
-		for (const w of (JSON.parse(readFileSync(path, "utf8")).slack ?? []) as Array<{ task: string; channel: string; thread?: string }>) {
-			if (w.thread) watch.threads.set(`${w.channel}:${w.thread}`, w.task);
-			else watch.channels.set(w.channel, w.task);
+		const plan = JSON.parse(readFileSync(path, "utf8"));
+		for (const w of (plan.slack ?? []) as Array<{ task: string; channel: string; thread?: string }>) {
+			if (w.thread) watch.slack.threads.set(`${w.channel}:${w.thread}`, w.task);
+			else watch.slack.channels.set(w.channel, w.task);
+		}
+		for (const w of (plan.feishu ?? []) as Array<{ task: string; chat: string; whole?: boolean }>) {
+			// 单条消息登记也要读会话，但只有整个会话登记才带任务名。
+			if (w.whole === true) watch.feishu.set(w.chat, w.task);
+			else if (!watch.feishu.has(w.chat)) watch.feishu.set(w.chat, undefined);
 		}
 	} catch {
 		// 没有这个文件，或正在写：当作没有登记
 	}
 	watchCache = { mtime, watch };
 	return watch;
+}
+
+export function slackWatch(): SlackWatch {
+	return chatWatch().slack;
+}
+
+export function feishuWatch(): ReadonlyMap<string, string | undefined> {
+	return chatWatch().feishu;
 }

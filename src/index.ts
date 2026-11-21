@@ -20,6 +20,7 @@ import { DISPATCH_RULES, HELD, HOME, INBOX_CLAIMED, INBOX_NEW, ORDERS, OWNER_RUL
 import { remoteWrite } from "./remote";
 import { checkReply, feedback, renderRules, settings } from "./rules";
 import { createScreen, messageRow, readReviewing } from "./screen";
+import { hasFeishu, readConfig, runSetup } from "./setup";
 import { OFF_MESSAGE, isOn, setOn } from "./switch";
 import { type Ev, GENERAL, type Table, agentTaken, append, doneBlocker, isReviewerName, logError, needsReview, openTasks, readTable, taskOfAgent, taskOfReviewer, today } from "./table";
 import { decidedFor, renderViews, since, snapshot, taskCard } from "./views";
@@ -302,8 +303,42 @@ export default function (pi: ExtensionAPI): void {
 			}
 			showStatus(ctx);
 			ctx.ui.notify(off ? "调度器模式已关闭：这个会话里插件不再做任何事" : "调度器模式已打开：你说的话和外部消息会按任务交给各自的负责 agent", "info");
+			if (!off) {
+				try {
+					const cfg = readConfig();
+					if (!(cfg.slack || hasFeishu(cfg) || cfg.ado?.org || cfg.reminders) || !cfg.triage?.about?.trim()) {
+						ctx.ui.notify("可运行 /调度配置，设置消息源和分拣描述。", "info");
+					}
+				} catch {
+					ctx.ui.notify("调度配置无法读取，请检查 config.json 后运行 /调度配置。", "warning");
+				}
+			}
 		},
 	});
+
+	const setupCommand: Parameters<ExtensionAPI["registerCommand"]>[1] = {
+		description: "交互配置调度台的分拣、飞书和 Slack",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				console.error("当前没有交互界面，请在插件仓库运行 bun scripts/install.ts。");
+				return;
+			}
+			try {
+				const changed = await runSetup({
+					select: (title, options) => ctx.ui.select(title, options),
+					input: (title, placeholder) => ctx.ui.input(title, placeholder),
+					editor: (title, prefill) => ctx.ui.editor(title, prefill),
+					confirm: (title, message) => ctx.ui.confirm(title, message),
+					notify: (message, level) => ctx.ui.notify(message, level),
+				});
+				if (changed && isOn(session)) screen.writePlan();
+			} catch (err) {
+				ctx.ui.notify(`无法保存或读取调度配置：${String(err)}`, "error");
+			}
+		},
+	};
+	pi.registerCommand("调度配置", setupCommand);
+	pi.registerCommand("dispatch-setting", setupCommand);
 
 	pi.on("input", async (e: { text?: string }, ctx: Ctx) => {
 		if (!isMain(ctx) || !on(ctx)) return;

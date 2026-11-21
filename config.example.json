@@ -11,6 +11,18 @@
       "C0987654321": { "name": "#team" }
     }
   },
+  "feishu": {
+    "accounts": [
+      {
+        "profile": "示例公司",
+        "realtime": true,
+        "groups": {
+          "oc_0123456789abcdef": { "name": "示例产研群", "line": "PROJ-123" },
+          "oc_fedcba9876543210": { "name": "示例团队群" }
+        }
+      }
+    ]
+  },
   "triage": { "about": "Your Name (as shown in chat), and what your team works on", "model": "pi/smol" },
   "ado": { "org": "your-ado-org" },
   "reminders": { "file": "~/.config/reminders.json", "line": "日常" }
