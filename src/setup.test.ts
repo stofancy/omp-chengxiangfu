@@ -96,6 +96,8 @@ test("飞书账号独立开关机器人和补读，按目录绑定、解绑并�
 		["profile", "list"],
 		["--profile", "示例公司", "auth", "status", "--json"],
 		["--profile", "示例团队", "auth", "status", "--json"],
+		["profile", "list"],
+		["profile", "list"],
 	]);
 	const cfg = readConfig(path);
 	expect(hasFeishu(cfg)).toBe(true);
@@ -124,6 +126,36 @@ test("子列表回车返回上一层并保留已做的修改，主菜单回车�
 	expect(readConfig(path)).toEqual({});
 	await expect(runSetup(questions(["飞书", "[ ] personal", "开启", "开启", ENTER, "完成"]).ui, { path, deps })).resolves.toBe(true);
 	expect(readConfig(path)).toEqual({ feishu: { accounts: [{ profile: "personal", bot: true, poll: true }] } });
+}));
+
+// 终端适配器的 input 不带预填值，目录一问直接回车得到空串
+test("先进项目绑定：未添加的账号可添加并绑定，目录回车取当前目录", () => tempConfig(async (path, dir) => {
+	writeFileSync(path, JSON.stringify({ rules: { language: "中文" } }));
+	const cwd = join(dir, "项目");
+	const deps = { slack: unexpected, async lark(args: string[]) { expect(args).toEqual(["profile", "list"]); return [{ name: "personal" }]; } };
+	await expect(runSetup(questions(["项目绑定", "添加并绑定 personal", "完成"], [""]).ui, { path, deps, cwd })).resolves.toBe(true);
+	expect(readConfig(path)).toEqual({
+		rules: { language: "中文" },
+		feishu: { accounts: [{ profile: "personal", bot: true, poll: false }] },
+		projects: { [cwd]: { feishu: "personal" } },
+	});
+}));
+
+test("两个向导同时开着：后保存的只写回自己改动的段", () => tempConfig(async (path, dir) => {
+	writeFileSync(path, JSON.stringify({ triage: { about: "旧描述" } }));
+	const cwd = join(dir, "项目");
+	const deps = { slack: unexpected, async lark() { return [{ name: "personal" }]; } };
+	const binding = questions(["项目绑定", "添加并绑定 personal", "完成"], [""]);
+	binding.ui.confirm = async () => {
+		// 确认保存之前，另一个向导关掉了分拣并保存
+		await runSetup(questions(["分拣", "关闭", "完成"]).ui, { path, deps });
+		return true;
+	};
+	await expect(runSetup(binding.ui, { path, deps, cwd })).resolves.toBe(true);
+	expect(readConfig(path)).toEqual({
+		feishu: { accounts: [{ profile: "personal", bot: true, poll: false }] },
+		projects: { [cwd]: { feishu: "personal" } },
+	});
 }));
 
 test("Slack 只存文件路径，从 API 识别用户和读取频道", () => tempConfig(async (path, dir) => {

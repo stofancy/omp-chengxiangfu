@@ -133,20 +133,32 @@ async function configureFeishuAccount(ui: SetupUI, lark: SetupIO["lark"], profil
 	return { profile, bot: botChoice === "开启", poll: pollChoice === "开启" };
 }
 
-async function configureProject(ui: SetupUI, cfg: DeskConfig, cwd: string) {
+async function configureProject(ui: SetupUI, cfg: DeskConfig, cwd: string, lark: SetupIO["lark"]) {
 	const dir = await field(ui, "项目目录", cwd);
 	if (dir === undefined) return;
 	const path = dir.startsWith("~/") ? join(homedir(), dir.slice(2)) : resolve(cwd, dir);
-	const profiles = (cfg.feishu?.accounts ?? []).map(account => account.profile);
+	const added = (cfg.feishu?.accounts ?? []).map(account => account.profile);
+	let listed: string[] = [];
+	try {
+		listed = ((await lark(["profile", "list"])) as Array<{ name: string }>).map(p => p.name);
+	} catch (err) {
+		ui.notify(`读取 lark-cli 账号失败，只列出已添加的账号：${String(err)}`, "warning");
+	}
+	// 还没在「飞书」里添加的账号也列出来：选中即顺带添加（开机器人入口、关补读）
+	const profiles = [...new Set([...added, ...listed])];
 	const current = cfg.projects?.[path]?.feishu;
 	if (!profiles.length && !current) {
-		ui.notify("请先添加飞书账号。", "warning");
+		ui.notify("没有可绑定的飞书账号，请先用 lark-cli 登录。", "warning");
 		return;
 	}
-	const options = profiles.map(profile => `绑定 ${profile}`);
+	const options = profiles.map(profile => added.includes(profile) ? `绑定 ${profile}` : `添加并绑定 ${profile}`);
 	const choice = await ui.select(`项目绑定 · ${path}${current ? ` · 当前 ${current}` : ""}`, [...options, ...(current ? ["解绑"] : []), BACK]);
 	if (choice === "解绑") delete cfg.projects?.[path];
-	else if (choice !== undefined && choice !== BACK) (cfg.projects ??= {})[path] = { feishu: profiles[options.indexOf(choice)] };
+	else if (choice !== undefined && choice !== BACK) {
+		const profile = profiles[options.indexOf(choice)];
+		if (!added.includes(profile)) cfg.feishu = { ...cfg.feishu, accounts: [...(cfg.feishu?.accounts ?? []), { profile, bot: true, poll: false }] };
+		(cfg.projects ??= {})[path] = { feishu: profile };
+	}
 }
 
 async function secretFile(ui: SetupUI, title: string, current?: Secret): Promise<Secret | undefined> {
@@ -201,15 +213,24 @@ export async function runSetup(ui: SetupUI, { path = CONFIG, deps = io, cwd = pr
 		try {
 			if (choice === "分拣") await configureTriage(ui, cfg);
 			else if (choice === "飞书") await configureFeishu(ui, cfg, deps.lark);
-			else if (choice === "项目绑定") await configureProject(ui, cfg, cwd);
+			else if (choice === "项目绑定") await configureProject(ui, cfg, cwd, deps.lark);
 			else if (choice === "Slack") await configureSlack(ui, cfg, deps.slack);
 		} catch (err) {
 			ui.notify(String(err), "error");
 		}
 	}
 	const changed = JSON.stringify(cfg) !== before;
+	let saved = cfg;
 	if (changed) {
 		if (!(await ui.confirm("保存调度配置", `写入 ${path}；已有配置会先备份。`))) return false;
+		// 另一个向导可能在此期间保存过：重读文件，只写回本次改动的段
+		const initial = JSON.parse(before) as DeskConfig;
+		saved = readConfig(path);
+		for (const key of new Set([...Object.keys(initial), ...Object.keys(cfg)])) {
+			if (JSON.stringify(cfg[key]) === JSON.stringify(initial[key])) continue;
+			if (cfg[key] === undefined) delete saved[key];
+			else saved[key] = cfg[key];
+		}
 		let backup: string | undefined;
 		if (existsSync(path)) {
 			const base = `${path}.bak.${new Date().toISOString().replace(/:/g, "-")}`;
@@ -217,14 +238,14 @@ export async function runSetup(ui: SetupUI, { path = CONFIG, deps = io, cwd = pr
 			for (let n = 1; existsSync(backup); n++) backup = `${base}.${n}`;
 			copyFileSync(path, backup, constants.COPYFILE_EXCL);
 		}
-		writeAtomic(path, `${JSON.stringify(cfg, null, 2)}\n`);
+		writeAtomic(path, `${JSON.stringify(saved, null, 2)}\n`);
 		ui.notify(backup ? `已保存配置；旧配置备份在 ${backup}` : `已保存配置：${path}`, "info");
 	}
 	const deploy = ["PR 补读"];
-	if (cfg.reminders) deploy.push("到期提醒");
-	if (cfg.slack) deploy.push("Slack 补读、实时推送");
-	if (cfg.feishu?.accounts?.some(a => a.poll)) deploy.push("飞书补读");
-	if (cfg.feishu?.accounts?.some(a => a.bot)) deploy.push("飞书机器人长连接");
+	if (saved.reminders) deploy.push("到期提醒");
+	if (saved.slack) deploy.push("Slack 补读、实时推送");
+	if (saved.feishu?.accounts?.some(a => a.poll)) deploy.push("飞书补读");
+	if (saved.feishu?.accounts?.some(a => a.bot)) deploy.push("飞书机器人长连接");
 	ui.notify(`需部署：${deploy.join("、")}。请在插件仓库运行 bun scripts/install.ts。`, "info");
 	return changed;
 }
